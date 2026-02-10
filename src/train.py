@@ -19,6 +19,7 @@ class RobustCurriculumCallback(BaseCallback):
         ):
         super().__init__()
         self.origin = origin
+        self.config = config    
         self.change_freq = config["train"]["change_frequency"]
         self.total_timesteps = config["train"]["total_timesteps"]
         self.save_dir = config["train"]["save_dir"]

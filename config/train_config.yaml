@@ -33,7 +33,7 @@ train:
   # ------------------------------------------
   # Curriculum
   # ------------------------------------------
-  total_timesteps: 1_000_000 # The total number of timesteps to train for
+  total_timesteps: 1_000 # The total number of timesteps to train for
   change_frequency: 10_000 # The number of timesteps to wait before changing the environment
   curriculum: # The curriculum for training the agent
     # must start at 0.00
