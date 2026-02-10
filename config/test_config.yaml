@@ -1,0 +1,69 @@
+# Testing options
+test:
+  model_path: "models/a2c_uav_curriculum_good.zip" # The path to the trained model to test
+  test_name: "test_1"
+  save_dir: "reports"
+  env: # The environment to test on
+    origin: [37.7749, -122.4194] # The origin of the environment (latitude, longitude)
+    box_size: 1500 # The maximum box size for this environment in meters
+    max_steps: 4000 # The maximum number of steps to test for 
+    dt: 0.05 # The number of seconds per step
+
+  missions:
+    "UAV-1":
+      initial_position: [37.7749, -122.4194]
+      initial_heading: 45
+      cruise_speed: 25
+      turning_radius: 60
+      waypoints:
+        # --- outbound diagonal ---
+        - [37.7755, -122.4188]
+        - [37.7762, -122.4182]
+        - [37.7768, -122.4176]
+
+        # --- clockwise box patrol ---
+        - [37.7772, -122.4170]
+        - [37.7772, -122.4160]
+        - [37.7765, -122.4155]
+        - [37.7758, -122.4160]
+        - [37.7758, -122.4170]
+        - [37.7765, -122.4175]
+
+        # --- inward spiral ---
+        - [37.7763, -122.4168]
+        - [37.7761, -122.4164]
+        - [37.7759, -122.4168]
+
+        # --- return leg ---
+        - [37.7754, -122.4176]
+        - [37.7750, -122.4185]
+        - [37.7749, -122.4194]
+
+    "UAV-2":
+      initial_position: [37.7742, -122.4190]
+      initial_heading: 270
+      cruise_speed: 20
+      turning_radius: 60
+      waypoints:
+        # --- west-to-east sweep ---
+        - [37.7742, -122.4182]
+        - [37.7742, -122.4172]
+        - [37.7742, -122.4162]
+
+        # --- north jog ---
+        - [37.7749, -122.4162]
+        - [37.7756, -122.4162]
+
+        # --- east-to-west sweep ---
+        - [37.7756, -122.4172]
+        - [37.7756, -122.4182]
+        - [37.7756, -122.4190]
+
+        # --- descending zig-zag ---
+        - [37.7750, -122.4186]
+        - [37.7745, -122.4180]
+        - [37.7740, -122.4186]
+
+        # --- convergence near origin ---
+        - [37.7744, -122.4190]
+        - [37.7749, -122.4194]
