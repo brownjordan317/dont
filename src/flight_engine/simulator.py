@@ -23,14 +23,19 @@ class FixedWingAircraft:
     
     def __init__(self, id_tag: str, initial_position: Position, 
                  initial_heading: float, cruise_speed: float, 
-                 turning_radius: float, color: str = 'blue', mission = None):
+                 turning_radius: float, color: str = 'blue', mission = None,
+                 speed_variance = 0, turning_variance = 0):
         self.id_tag = id_tag
         self.initial_position = Position(initial_position.latitude, initial_position.longitude)
         self.initial_heading =  initial_heading
         self.position = Position(initial_position.latitude, initial_position.longitude)
         self.heading = initial_heading
         self.color = color
-        
+        self.speed_variance = speed_variance
+        self.turning_variance = turning_variance
+        self.turning_radius = turning_radius
+        self.cruise_speed = cruise_speed
+
         # Components
         self.dynamics = FlightDynamics(turning_radius, cruise_speed)
         self.waypoint_manager = WaypointManager()
@@ -44,6 +49,15 @@ class FixedWingAircraft:
         # Add initial waypoints
         if mission:
             self.add_waypoints(mission)
+
+    def apply_variance(self):
+        speed_var = np.random.randint(-self.speed_variance, self.speed_variance + 1)
+        turn_var = np.random.randint(-self.turning_variance, self.turning_variance + 1)
+        self.dynamics = FlightDynamics(
+            self.turning_radius + turn_var, 
+            self.cruise_speed + speed_var
+        )
+
     
     def add_wp(self, waypoint: Position):
         self.waypoint_manager.add_waypoint(waypoint)

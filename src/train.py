@@ -119,8 +119,10 @@ class RobustCurriculumCallback(BaseCallback):
             new_id,
             Position(self.origin[0], self.origin[1]),
             heading,
-            25.0,
-            20.0,
+            self.config["train"]["drone_speed"],
+            self.config["train"]["drone_turn_rate"],
+            speed_variance = self.config["train"]["speed_var"], 
+            turning_variance = self.config["train"]["speed_var"]
         )
 
         env.aircraft_list.append(new_uav)
@@ -219,6 +221,8 @@ def train(config):
             initial_heading,
             config["train"]["drone_speed"],
             config["train"]["drone_turn_rate"],
+            speed_variance = config["train"]["speed_var"], 
+            turning_variance = config["train"]["speed_var"]
         )
     ]
 
@@ -240,6 +244,9 @@ def train(config):
         max_steps=config["train"]["max_steps"],
         boundary_margin=config["train"]["boundary_margin"],
         mission_waypoint_count=config["train"]["mission_waypoint_count"],
+        mode='gen_mission', #gen_mission or manual_mission
+        caution_dist=config["train"]["caution_dist"],
+        critical_dist=config["train"]["critical_dist"]
     ) 
 
     model = A2C(
@@ -273,10 +280,4 @@ def train(config):
 
 
 if __name__ == "__main__":
-    print(
-        """
-        Run the training script using the DeconflictionAutoPilotFactory in 
-        factory.py. This will allow you to switch between training and 
-        testing modes by changing the 'mode' field in factory.yaml.
-        """
-    )
+    print()

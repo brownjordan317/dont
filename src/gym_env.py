@@ -18,6 +18,8 @@ class MultiUAVEnv(gym.Env):
             boundary_margin=0.15,
             mission_waypoint_count=3,
             mode='gen_mission', #gen_mission or manual_mission
+            caution_dist=100,
+            critical_dist=35
         ):
         super().__init__()
         self.aircraft_list = aircraft_list
@@ -27,7 +29,9 @@ class MultiUAVEnv(gym.Env):
         self.boundary_margin = boundary_margin
         self.mission_waypoint_count = mission_waypoint_count
         self.mode = mode
-        
+        self.caution_dist = caution_dist
+        self.critical_dist = critical_dist
+
         # Telemetry
         self.update_bounds(tl, br)
 
@@ -176,8 +180,6 @@ class MultiUAVEnv(gym.Env):
         """
         Calculates graded proximity penalties to provide a smooth gradient for the RL agent.
         """
-        caution_dist = 100.0  # Start feeling 'uneasy' at 100m
-        danger_dist = 35.0    # Critical proximity
         
         for i1, i2 in combinations(range(len(self.aircraft_list)), 2):
             ac1, ac2 = self.aircraft_list[i1], self.aircraft_list[i2]
@@ -185,16 +187,16 @@ class MultiUAVEnv(gym.Env):
             # Use the same distance calculation as navigation
             sep = geodesic(ac1.position.to_tuple(), ac2.position.to_tuple()).meters
             
-            if sep < caution_dist:
+            if sep < self.caution_dist:
                 # 1. Soft Penalty (Caution Zone: 100m down to 35m)
                 # Normalizes to a 0.0 to 1.0 scale
-                severity = 1.0 - (sep / caution_dist)
+                severity = 1.0 - (sep / self.caution_dist)
                 penalty = -10.0 * severity 
                 
                 # 2. Hard Penalty (Danger Zone: < 35m)
-                if sep < danger_dist:
+                if sep < self.critical_dist:
                     # Quadratic spike to make this zone extremely unattractive
-                    danger_severity = (1.0 - (sep / danger_dist)) ** 2
+                    danger_severity = (1.0 - (sep / self.critical_dist)) ** 2
                     penalty += -2000.0 * danger_severity
                 
                 rewards_list[i1] += penalty
@@ -302,6 +304,7 @@ class MultiUAVEnv(gym.Env):
                 ac.waypoint_manager.waypoint_queue.clear()
                 ac.waypoint_manager.current_waypoint = None
                 self._refill_mission(ac)
+            ac.apply_variance()
             ac.waypoint_manager.hit_waypoints.clear()
         obs = np.concatenate(
             [self._get_uav_obs(j) for j in range(self.max_uavs)]

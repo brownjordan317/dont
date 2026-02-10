@@ -1,24 +1,7 @@
-# Deconflicted Optimal Navigation & Trajectory-learning (DON'T)
+# **D**econflicted **O**ptimal **N**avigation & **T**rajectory-learning (DON<sup><span style="font-size:0.5em">&amp;</span></sup>T)
+
 
 A reinforcement learning framework for training autonomous fixed-wing UAVs to navigate waypoint missions while avoiding collisions in shared airspace. Built with Stable Baselines3 (A2C algorithm) and Gymnasium, featuring curriculum learning for progressive difficulty scaling.
-
----
-
-## 📋 Table of Contents
-
-- [Overview](#overview)
-- [Key Features](#key-features)
-- [Installation](#installation)
-- [Project Structure](#project-structure)
-- [Quick Start Guide](#quick-start-guide)
-- [Configuration Reference](#configuration-reference)
-- [Training Mode](#training-mode)
-- [Testing Mode](#testing-mode)
-- [Flight Engine Components](#flight-engine-components)
-- [Physics Testing](#physics-testing)
-- [Advanced Usage](#advanced-usage)
-- [Troubleshooting](#troubleshooting)
-- [Understanding the System](#understanding-the-system)
 
 ---
 
@@ -59,7 +42,7 @@ The training uses **curriculum learning** that progressively increases difficult
 ## 🔧 Installation
 
 ### Prerequisites
-- Python 3.8 or higher
+- Python 3.10 or higher
 - pip package manager
 
 ### Install Dependencies
@@ -76,10 +59,11 @@ pip install -r requirements.txt
 - **`deconfliction_factory.py`**: The main factory that reads configuration and launches training or testing
 
 ### Core Files
-- **`factory.yaml`**: All configuration settings (THIS IS WHAT YOU EDIT)
+- **`test_config.yaml & train_config.yaml`**: All configuration settings (THIS IS WHAT YOU EDIT)
 - **`train.py`**: Training loop with curriculum callback
 - **`test.py`**: Model evaluation and visualization generation
 - **`gym_env.py`**: Gymnasium environment implementing the RL interface
+- **`deconfliction_factory.py`**: Handles the running of the train and test scripts
 
 ### Flight Engine (flight_engine/)
 - **`simulator.py`**: FixedWingAircraft class with Dubins path following
@@ -102,7 +86,7 @@ The system is controlled entirely through **`deconfliction_factory.py`** and the
 
 #### Step 1: Choose Your Parameters
 
-Edit `train.yaml` or `test.yaml` and set the parameters you want to use.
+Edit `train_config.yaml` or `test_config.yaml` and set the parameters you want to use.
 
 #### Step 2: Run the Factory
 
@@ -125,7 +109,7 @@ All settings are in the yaml files. Here's what each section does:
 
 ### Training Configuration
 
-#### A2C Hyperparameters
+#### Hyperparameters
 
 ```yaml
 train:
@@ -151,14 +135,19 @@ train:
 
 ```yaml
   # Physics Parameters
-  drone_speed: 25          # Cruise speed in m/s
-  drone_turn_rate: 30      # Max turn rate in degrees/second
-  dt: 0.6                  # Simulation timestep in seconds
+  drone_speed: 25 # The speed of the drone
+  speed_var: 3 # The random variations that the speed could change
+  drone_turn_rate: 30 # The turn rate of the drone
+  turn_var: 5 # The random variation that the turn rate could be off
+  dt: 0.6                  # Simulation timestep in seconds (Essentially tunes the max travel distance per timestep)
   max_steps: 10_000        # Max steps per episode before reset
   
   # Mission Generation
   boundary_margin: 0.15    # Keep waypoints 15% away from geofence edges
   mission_waypoint_count: 3  # Number of waypoints maintained in queue
+  caution_dist: 100 # This is the distance between each other that drones start becoming nervous
+  critical_dist: 35 # This is the critical distance that will lead the system to a crash
+
 ```
 
 **Important Notes**:
@@ -285,30 +274,13 @@ Define specific waypoint missions for each UAV:
 
 ## 🎓 Training Mode
 
-### Starting Training
-
-1. **Edit `factory.yaml`**:
-   ```yaml
-   mode: "train"
-   ```
-
-2. **Adjust training parameters** (optional):
-   - Modify `total_timesteps` for training duration
-   - Tune `learning_rate` and other hyperparameters
-   - Customize the curriculum progression
-
-3. **Run**:
-   ```bash
-   python deconfliction_factory.py
-   ```
-
 ### What Happens During Training
 
 The system will:
 1. **Initialize** a single UAV at a random global location
 2. **Create** a small operational area (200-250m)
 3. **Generate** random waypoint missions continuously
-4. **Train** the A2C policy using the Gymnasium environment
+4. **Train** the policy using the Gymnasium environment
 5. **Progress** through curriculum phases automatically
 6. **Save** model checkpoints at each phase transition
 7. **Display** rich console output showing progress
@@ -406,7 +378,7 @@ You can resume training by loading this model and continuing.
 
 4. **Run**:
    ```bash
-   python deconfliction_factory.py
+   make test
    ```
 
 ### What Happens During Testing
@@ -422,7 +394,7 @@ You can resume training by loading this model and continuing.
 ### Test Output
 
 ```
-tests/
+reports/
 └── test_1.png  # Visualization with flight paths, waypoints, and metrics
 ```
 
@@ -434,7 +406,6 @@ The generated plot shows:
 - **Start Positions**: Circles marking where each UAV began
 - **End Positions**: Squares showing final positions
 - **Waypoints**: X markers showing all waypoints that existed
-- **Arrivals**: Star markers (yellow border) showing successfully reached waypoints
 - **Geofence**: Red dashed box showing operational boundary
 - **Metrics**: Title includes steps taken, total reward, and waypoint arrivals
 
@@ -448,163 +419,6 @@ The generated plot shows:
 - ❌ Geofence violations indicate boundary penalty needs tuning
 
 ---
-
-## 🛠️ Flight Engine Components
-
-### simulator.py - FixedWingAircraft
-
-The core aircraft class that models fixed-wing flight physics:
-
-**Key Methods**:
-- `__init__()`: Initialize aircraft with position, heading, speed, turn radius
-- `add_waypoints()`: Queue up waypoints for the mission
-- `update(dt)`: Physics update - called every timestep
-- `_update_navigation()`: Dubins path following toward current waypoint
-- `_update_loiter()`: Circular loiter pattern when mission complete
-
-**Flight Modes**:
-- `NAVIGATING`: Actively flying toward waypoints
-- `LOITERING`: Circling in place (mission complete)
-- `IDLE`: Not yet started
-
-**Usage Example**:
-```python
-from flight_engine.simulator import FixedWingAircraft
-from flight_engine.helpers import Position
-
-# Create aircraft
-uav = FixedWingAircraft(
-    id_tag="UAV-1",
-    initial_position=Position(37.7749, -122.4194),
-    initial_heading=0.0,  # radians
-    cruise_speed=25.0,    # m/s
-    turning_radius=60.0,  # meters
-    color='blue'
-)
-
-# Add waypoints
-waypoints = [
-    Position(37.7755, -122.4188),
-    Position(37.7762, -122.4182),
-]
-uav.add_waypoints(waypoints)
-
-# Update physics
-dt = 0.1  # seconds
-uav.update(dt)
-```
-
-### flight_calcs.py - FlightDynamics
-
-Handles the mathematics of fixed-wing flight:
-
-**Key Methods**:
-- `compute_turn()`: Calculate heading change based on max turn rate
-- `compute_arc_motion()`: Calculate new position during a turn (circular arc)
-- `compute_straight_motion()`: Calculate new position during straight flight
-
-**Physics Model**:
-- Uses Dubins path concepts (turn or go straight)
-- Respects turning radius constraints (no instant turns!)
-- Smooth transitions between waypoints
-
-### helpers.py - Utilities
-
-**Position Class**:
-```python
-from flight_engine.helpers import Position
-
-pos = Position(latitude=37.7749, longitude=-122.4194)
-lat, lon = pos.to_tuple()
-```
-
-**FlightMode Enum**:
-```python
-from flight_engine.helpers import FlightMode
-
-if aircraft.flight_mode == FlightMode.NAVIGATING:
-    print("Flying to waypoint")
-```
-
-**Angle Wrapping**:
-```python
-from flight_engine.helpers import wrap_angle
-angle = wrap_angle(3.5 * np.pi)  # Wraps to [-π, π]
-```
-
-### trans_coorders.py - CoordinateTransformer
-
-Converts between geographic (lat/lon) and local Cartesian (x/y meters) coordinates:
-
-```python
-from flight_engine.trans_coorders import CoordinateTransformer
-
-# Create transformer centered at a point
-transformer = CoordinateTransformer(
-    origin_lat=37.7749,
-    origin_lon=-122.4194
-)
-
-# Convert geographic to local meters
-x, y = transformer.geo_to_local(37.7750, -122.4193)  # Returns meters
-
-# Convert back
-lat, lon = transformer.local_to_geo(x, y)
-```
-
-**Why This Matters**:
-- Physics calculations are done in meters (local coordinates)
-- Display and input use lat/lon (geographic coordinates)
-- Transformer handles the conversion automatically
-
-### wp_manager.py - WaypointManager
-
-Manages waypoint queues and arrival detection:
-
-```python
-from flight_engine.wp_manager import WaypointManager
-from flight_engine.helpers import Position
-
-manager = WaypointManager(arrival_threshold=10.0)  # 10 meter arrival radius
-
-# Add waypoints
-manager.add_waypoint(Position(37.7750, -122.4190))
-manager.add_waypoint(Position(37.7760, -122.4180))
-
-# Check arrival
-distance_to_wp = 8.5  # meters
-if manager.check_arrival(distance_to_wp):
-    manager.advance()  # Move to next waypoint
-```
-
-**Features**:
-- FIFO queue using `collections.deque`
-- Tracks current waypoint separately from queue
-- Records all hit waypoints for analysis
-- Configurable arrival threshold
-
-### visualizer.py - FlightVisualizer
-
-Creates matplotlib visualizations:
-
-```python
-from flight_engine.visualizer import FlightVisualizer
-
-viz = FlightVisualizer(figsize=(14, 11))
-viz.plot(aircraft_list)  # List of FixedWingAircraft
-viz.save("output.png")
-viz.show()
-```
-
-**Displays**:
-- Flight paths (trajectories)
-- Current positions with heading arrows
-- Waypoint queues
-- Loiter circles
-- Color-coded by UAV
-
----
-
 ## 🧪 Physics Testing
 
 Use `just_fly_a_path.py` to test physics without RL:
@@ -642,9 +456,3 @@ final_physics_test.png  # Complete trajectory visualization
 - **Validate** coordinate transformations
 - **Test** physics before integrating with RL
 - **Create animations** by combining frames into GIF/video
-
-
-Currently, neighbor information is placeholder. To implement:
-1. Calculate distances to other UAVs
-2. Add relative positions and velocities
-3. Extend observation to include these features

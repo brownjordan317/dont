@@ -2,7 +2,7 @@
 train:
 
   # ------------------------------------------
-  # Stable Baselines3 A2C hyperparameters
+  # Stable Baselines3 hyperparameters
   # ------------------------------------------
   model_name: "a2c_uav_curriculum" # The name of the model to save
   learning_rate: 1e-4 # The learning rate of the optimizer
@@ -20,12 +20,16 @@ train:
   # Flight Simulator
   # ------------------------------------------
   drone_speed: 25 # The speed of the drone
+  speed_var: 3 # The random variations that the speed could change
   drone_turn_rate: 30 # The turn rate of the drone
+  turn_var: 5 # The random variation that the turn rate could be off
   dt: 0.6 # The number of seconds per step
   max_steps: 10_000 # The maximum number of steps per episode
   boundary_margin: 0.15 # The margin to the boundary of the environment in percentage of box size for waypoint spawning
   mission_waypoint_count: 3 # The number of waypoints at a time in the drone's mission. There isnt really a need for this to be higher than 3
-  
+  caution_dist: 100 # This is the distance between each other that drones start becoming nervous
+  critical_dist: 35 # This is the critical distance that will lead the system to a crash
+
   # ------------------------------------------
   # Curriculum
   # ------------------------------------------
