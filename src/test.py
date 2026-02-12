@@ -75,7 +75,7 @@ def run_and_record_episode(model, env, transformer, max_steps):
         for i, ac in enumerate(env.aircraft_list):
             pos = ac.position.to_tuple()
             x, y = transformer.geo_to_local(pos[0], pos[1])
-            uav_data[i]['positions'].append((x, y, ac.heading))
+            uav_data[i]['positions'].append((x, y))
             
             # Record current waypoint if it exists
             if ac.waypoint_manager.current_waypoint:
@@ -174,120 +174,6 @@ def visualize_episode(uav_data, tl, br, transformer, scenario_name,
     console.print(f"[green]✓[/green] Saved visualization to {save_path}")
     plt.close()
 
-import matplotlib.animation as animation
-import numpy as np
-
-def animate_episode(uav_data, tl, br, transformer, scenario_name, save_path):
-    """
-    Generates a high-fidelity MP4/GIF animation of UAV trajectories.
-    Converts heading from radians to degrees and adjusts for marker orientation.
-    """
-    # 1. Coordinate Space Setup
-    tl_x, tl_y = transformer.geo_to_local(tl[0], tl[1])
-    br_x, br_y = transformer.geo_to_local(br[0], br[1])
-    
-    fig, ax = plt.subplots(figsize=(12, 12))
-    
-    # Draw Static Geofence
-    width, height = br_x - tl_x, tl_y - br_y
-    rect = Rectangle((tl_x, br_y), width, height, 
-                     linewidth=2, edgecolor='red', facecolor='none', 
-                     linestyle='--', label='Geofence boundary')
-    ax.add_patch(rect)
-    
-    # 2. Initialization of Dynamic Elements
-    num_uavs = len(uav_data)
-    colors = plt.cm.get_cmap('tab10', num_uavs)
-    
-    lines = []        # To store trajectory trails
-    uav_heads = []    # To store rotating markers
-    
-    # Find the longest trajectory to define animation length
-    max_frames = max(len(d['positions']) for d in uav_data)
-
-    for i, data in enumerate(uav_data):
-        # Trail line: alpha starts low to emphasize the 'head'
-        ln, = ax.plot([], [], color=colors(i), alpha=0.5, linewidth=1.5,
-                     label=f"UAV {data['id']}")
-        lines.append(ln)
-        
-        # Aircraft Head: Triangle marker
-        # (3, 0, 0) is an equilateral triangle pointing 'Up'
-        head, = ax.plot([], [], color=colors(i), marker=(3, 0, 0), 
-                       markersize=15, markeredgecolor='black', linestyle='None')
-        uav_heads.append(head)
-
-        # Plot static waypoints for this specific UAV
-        all_wps = np.array(data['all_waypoints'])
-        if len(all_wps) > 0:
-            ax.scatter(all_wps[:, 0], all_wps[:, 1], color=colors(i), 
-                      marker='x', s=100, alpha=0.2)
-
-    def init():
-        """Initialize axes and background elements"""
-        ax.set_xlim(tl_x - 100, br_x + 100)
-        ax.set_ylim(br_y - 100, tl_y + 100)
-        ax.set_xlabel('Local X (m)')
-        ax.set_ylabel('Local Y (m)')
-        ax.set_aspect('equal')
-        ax.grid(True, linestyle=':', alpha=0.6)
-        ax.legend(loc='upper right')
-        return lines + uav_heads
-
-    def update(frame):
-        """Update loop for each frame of the animation"""
-        for i, data in enumerate(uav_data):
-            pos_history = data['positions']
-            
-            # If the UAV has data for this frame
-            if frame < len(pos_history):
-                x, y, heading_rad = pos_history[frame]
-                
-                # Update Trail
-                path_segments = np.array(pos_history[:frame+1])
-                lines[i].set_data(path_segments[:, 0], path_segments[:, 1])
-                
-                # Update UAV Head Position
-                uav_heads[i].set_data([x], [y])
-                
-                # Heading Transformation Logic:
-                # 1. Convert Rad -> Deg
-                heading_deg = np.degrees(heading_rad)
-                
-                # 2. Adjust Orientation
-                # Matplotlib's (3,0,0) triangle points at 90 deg (North).
-                # If your 0 rad is East (0 deg), we subtract 90 from the heading
-                # to align the triangle's tip with the trajectory.
-                marker_rotation = -heading_deg
-                uav_heads[i].set_marker((3, 0, marker_rotation))
-                
-        # Update title with progress
-        ax.set_title(f"{scenario_name}\nFrame: {frame}/{max_frames}")
-        return lines + uav_heads
-
-    # 3. Animation Construction
-    ani = animation.FuncAnimation(
-        fig, update, frames=max_frames, init_func=init, 
-        blit=True, interval=40, repeat=False
-    )
-
-    # 4. Save Execution
-    console.print(f"[bold yellow]Rendering animation: {save_path}[/bold yellow]")
-    
-    # Determine writer based on extension
-    if save_path.endswith('.mp4'):
-        writer = animation.FFMpegWriter(fps=60, metadata=dict(artist='Gemini Flight Engine'), bitrate=1800)
-    else:
-        writer = 'pillow' # For .gif
-
-    ani.save(save_path, writer=writer)
-    plt.close()
-    console.print(f"[bold green]✓[/bold green] Animation successfully exported.")
-
-# In your test() function, replace the call to visualize_episode with:
-# save_path = os.path.join(config["test"]["save_dir"], f"{scenario['name']}.mp4")
-# animate_episode(uav_data, tl, br, transformer, scenario['name'], save_path)
-
 
 def test(config):
     console.print(
@@ -355,9 +241,6 @@ def test(config):
         total_reward, arrivals,
         save_path
     )
-
-    save_path = os.path.join(config["test"]["save_dir"], f"{scenario['name']}.mp4")
-    animate_episode(uav_data, tl, br, transformer, scenario['name'], save_path)
     
     env.close()
     

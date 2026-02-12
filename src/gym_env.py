@@ -18,8 +18,8 @@ class MultiUAVEnv(gym.Env):
             boundary_margin=0.15,
             mission_waypoint_count=3,
             mode='gen_mission', #gen_mission or manual_mission
-            caution_dist=30.0,
-            critical_dist=3.0
+            caution_dist=100.0,
+            critical_dist=35.0
         ):
         super().__init__()
         self.aircraft_list = aircraft_list

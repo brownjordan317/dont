@@ -1,13 +1,13 @@
 # Testing options
 test:
-  model_path: "models/a2c_uav_curriculum.zip" # The path to the trained model to test
+  model_path: "models_2/a2c_uav_curriculum.zip" # The path to the trained model to test
   test_name: "test_1"
   save_dir: "reports"
   env: # The environment to test on
     origin: [37.7749, -122.4194] # The origin of the environment (latitude, longitude)
     box_size: 1500 # The maximum box size for this environment in meters
-    max_steps: 5_000 # The maximum number of steps to test for 
-    dt: 0.1 # The number of seconds per step
+    max_steps: 4000 # The maximum number of steps to test for 
+    dt: 0.3 # The number of seconds per step
 
   mode: "gen_mission" # gen_mission or manual_mission using gen_mission will auto gen waypoints as the drone flies and the manual_mission will fly the waypoints from the set missions below
   missions:
