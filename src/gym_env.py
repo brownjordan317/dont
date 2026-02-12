@@ -44,7 +44,11 @@ class MultiUAVEnv(gym.Env):
             dtype=np.float32
         )
         
-        self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(self.max_uavs,), dtype=np.float32)
+        self.action_space = spaces.Box(
+            low=-1.0, high=1.0, 
+            shape=(self.max_uavs,), 
+            dtype=np.float32
+        )
         self.current_step = 0
 
     def update_bounds(self, tl, br):
@@ -52,14 +56,16 @@ class MultiUAVEnv(gym.Env):
         self.min_lon, self.max_lon = sorted([tl[1], br[1]])
         self.transformer = CoordinateTransformer(self.min_lat, self.min_lon)
         
-        lat_range, lon_range = self.max_lat - self.min_lat, self.max_lon - self.min_lon
+        lat_range, lon_range = \
+            self.max_lat - self.min_lat, self.max_lon - self.min_lon
         self.wp_min_lat = self.min_lat + (lat_range * self.boundary_margin)
         self.wp_max_lat = self.max_lat - (lat_range * self.boundary_margin)
         self.wp_min_lon = self.min_lon + (lon_range * self.boundary_margin)
         self.wp_max_lon = self.max_lon - (lon_range * self.boundary_margin)
 
     def _refill_mission(self, ac):
-        current_total = ac.waypoint_manager.queue_size() + (1 if ac.waypoint_manager.current_waypoint else 0)
+        current_total = ac.waypoint_manager.queue_size() \
+                    + (1 if ac.waypoint_manager.current_waypoint else 0)
         needed = self.mission_waypoint_count - current_total
         for _ in range(max(0, int(needed))):
             wp = Position(
@@ -90,7 +96,9 @@ class MultiUAVEnv(gym.Env):
         others = []
         for i, ac in enumerate(self.aircraft_list):
             if i == subject_idx: continue
-            dist = geodesic(subject_ac.position.to_tuple(), ac.position.to_tuple()).meters
+            dist = geodesic(
+                subject_ac.position.to_tuple(), 
+                ac.position.to_tuple()).meters
             others.append((dist, ac))
             
         others.sort(key=lambda x: x[0])
@@ -99,12 +107,20 @@ class MultiUAVEnv(gym.Env):
         for i in range(num_neighbors):
             if i < len(others):
                 dist, other_ac = others[i]
-                v2_x = other_ac.dynamics.cruise_speed * np.sin(other_ac.heading)
-                v2_y = other_ac.dynamics.cruise_speed * np.cos(other_ac.heading)
+                v2_x = other_ac.dynamics.cruise_speed * np.sin(
+                    other_ac.heading
+                )
+                v2_y = other_ac.dynamics.cruise_speed * np.cos(
+                    other_ac.heading
+                )
                 rvx, rvy = v1_x - v2_x, v1_y - v2_y
                 
-                p1 = self.transformer.geo_to_local(*subject_ac.position.to_tuple())
-                p2 = self.transformer.geo_to_local(*other_ac.position.to_tuple())
+                p1 = self.transformer.geo_to_local(
+                    *subject_ac.position.to_tuple()
+                )
+                p2 = self.transformer.geo_to_local(
+                    *other_ac.position.to_tuple()
+                )
                 dx, dy = p2[0] - p1[0], p2[1] - p1[1]
                 
                 v_closing = (rvx * dx + rvy * dy) / (dist + 1e-6)
@@ -135,8 +151,14 @@ class MultiUAVEnv(gym.Env):
         
         wp = ac.waypoint_manager.current_waypoint
         if wp:
-            dist_wp = geodesic(ac.position.to_tuple(), wp.to_tuple()).meters
-            brg_wp = np.arctan2(wp.longitude - ac.position.longitude, wp.latitude - ac.position.latitude)
+            dist_wp = geodesic(
+                ac.position.to_tuple(), 
+                wp.to_tuple()
+            ).meters
+            brg_wp = np.arctan2(
+                wp.longitude - ac.position.longitude, 
+                wp.latitude - ac.position.latitude
+            )
             rel_brg_wp = wrap_angle(brg_wp - ac.heading)
         else:
             dist_wp, rel_brg_wp = 1000.0, 0.0
@@ -151,13 +173,17 @@ class MultiUAVEnv(gym.Env):
         ]
         
         neighbor_obs = self._get_neighbor_obs(idx, num_neighbors=2)
+
         return np.array(nav_obs + neighbor_obs, dtype=np.float32)
     
     def _calculate_collision_rewards(self, rewards_list):
         # FIX: Smoother gradients. We use a linear penalty that is less likely to cause circling.
         for i1, i2 in combinations(range(len(self.aircraft_list)), 2):
             ac1, ac2 = self.aircraft_list[i1], self.aircraft_list[i2]
-            sep = geodesic(ac1.position.to_tuple(), ac2.position.to_tuple()).meters
+            sep = geodesic(
+                ac1.position.to_tuple(), 
+                ac2.position.to_tuple()
+            ).meters
             
             if sep < self.caution_dist:
                 # Severity 0.0 at caution_dist, 1.0 at 0m
@@ -180,7 +206,10 @@ class MultiUAVEnv(gym.Env):
         for i, ac in enumerate(self.aircraft_list):
             # Maintain the original loiter update logic
             if ac.flight_mode == FlightMode.LOITERING:
-                lx, ly = self.transformer.geo_to_local(ac.position.latitude, ac.position.longitude)
+                lx, ly = self.transformer.geo_to_local(
+                    ac.position.latitude, 
+                    ac.position.longitude
+                )
                 ac._update_loiter(lx, ly, self.dt, self.transformer)
                 continue
 
@@ -196,14 +225,23 @@ class MultiUAVEnv(gym.Env):
             dist_moved = ac.dynamics.cruise_speed * self.dt
             
             dx, dy = dist_moved * np.sin(ac.heading), dist_moved * np.cos(ac.heading)
-            curr_x, curr_y = self.transformer.geo_to_local(pos_prev[0], pos_prev[1])
-            new_lat, new_lon = self.transformer.local_to_geo(curr_x + dx, curr_y + dy)
+            curr_x, curr_y = self.transformer.geo_to_local(
+                pos_prev[0], 
+                pos_prev[1]
+            )
+            new_lat, new_lon = self.transformer.local_to_geo(
+                curr_x + dx, 
+                curr_y + dy
+            )
             ac.position = Position(new_lat, new_lon)
             pos_curr = ac.position.to_tuple()
 
             # Sequential Arrival Logic (Segment Check)
             arrived = self._check_line_segment_arrival(
-                pos_prev, pos_curr, wp.to_tuple(), ac.waypoint_manager.arrival_threshold
+                pos_prev, 
+                pos_curr, 
+                wp.to_tuple(), 
+                ac.waypoint_manager.arrival_threshold
             )
 
             # Reward Shaping

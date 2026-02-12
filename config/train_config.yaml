@@ -14,7 +14,7 @@ train:
   tensorboard_log: "./training_logs/" # The path to the tensorboard log
   verbose: 0 # Verbosity level
   device: "cpu" # The device to train on
-  save_dir: "./models/" # The path to save the trained models
+  save_dir: "./models_2/" # The path to save the trained models
 
   # ------------------------------------------
   # Flight Simulator
@@ -27,41 +27,41 @@ train:
   max_steps: 10_000 # The maximum number of steps per episode
   boundary_margin: 0.15 # The margin to the boundary of the environment in percentage of box size for waypoint spawning
   mission_waypoint_count: 3 # The number of waypoints at a time in the drone's mission. There isnt really a need for this to be higher than 3
-  caution_dist: 100 # This is the distance between each other that drones start becoming nervous
-  critical_dist: 35 # This is the critical distance that will lead the system to a crash
+  caution_dist: 30 # This is the distance between each other that drones start becoming nervous
+  critical_dist: 3 # This is the critical distance that will lead the system to a crash
 
   # ------------------------------------------
   # Curriculum
   # ------------------------------------------
-  total_timesteps: 10_000_000 # The total number of timesteps to train for
-  change_frequency: 50_000 # The number of timesteps to wait before changing the environment
+  total_timesteps: 1_000_000 # The total number of timesteps to train for
+  change_frequency: 15_000 # The number of timesteps to wait before changing the environment
   curriculum: # The curriculum for training the agent
     # must start at 0.00
     0.00: # Percentage into training when this environment should be used
-      min_box_size: 200 # The minimum box size for this environment in meters
-      max_box_size: 250 # The maximum box size for this environment in meters
+      min_box_size: 300 # The minimum box size for this environment in meters
+      max_box_size: 300 # The maximum box size for this environment in meters
       num_drones: 1 # The number of drones for this environment
     0.10:
-      min_box_size: 250
-      max_box_size: 300
+      min_box_size: 300
+      max_box_size: 500
       num_drones: 1
     0.20:
-      min_box_size: 300
-      max_box_size: 400
-      num_drones: 1
-    0.35:
-      min_box_size: 400
+      min_box_size: 500
       max_box_size: 600
+      num_drones: 2
+    0.35:
+      min_box_size: 500
+      max_box_size: 800
       num_drones: 2
     0.50:
       min_box_size: 600
-      max_box_size: 800
+      max_box_size: 1000
       num_drones: 3
     0.65:
-      min_box_size: 800
-      max_box_size: 1000
+      min_box_size: 600
+      max_box_size: 1200
       num_drones: 4
     0.80:
-      min_box_size: 1000
+      min_box_size: 800
       max_box_size: 1500
       num_drones: 5

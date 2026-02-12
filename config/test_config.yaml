@@ -1,6 +1,6 @@
 # Testing options
 test:
-  model_path: "/home/megrad/Documents/GitHub/dont/a2c_uav_curriculum.zip" # The path to the trained model to test
+  model_path: "models_2/a2c_uav_curriculum.zip" # The path to the trained model to test
   test_name: "test_1"
   save_dir: "reports"
   env: # The environment to test on
@@ -9,13 +9,13 @@ test:
     max_steps: 4000 # The maximum number of steps to test for 
     dt: 0.3 # The number of seconds per step
 
-  mode: "manual_mission" # gen_mission or manual_mission using gen_mission will auto gen waypoints as the drone flies and the manual_mission will fly the waypoints from the set missions below
+  mode: "gen_mission" # gen_mission or manual_mission using gen_mission will auto gen waypoints as the drone flies and the manual_mission will fly the waypoints from the set missions below
   missions:
     "UAV-1":
       initial_position: [37.7749, -122.4194]
       initial_heading: 45
       cruise_speed: 25
-      turning_radius: 60
+      turning_radius: 30
       waypoints:
         # --- outbound diagonal ---
         - [37.7755, -122.4188]
@@ -44,7 +44,7 @@ test:
       initial_position: [37.7742, -122.4190]
       initial_heading: 270
       cruise_speed: 20
-      turning_radius: 60
+      turning_radius: 30
       waypoints:
         # --- west-to-east sweep ---
         - [37.7742, -122.4192]

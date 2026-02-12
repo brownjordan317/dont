@@ -55,7 +55,8 @@ class RobustCurriculumCallback(BaseCallback):
 
     def _get_curriculum_phase_idx(self):
         """
-        Calculates the current phase index based on the progress of the training.
+        Calculates the current phase index based on the progress of the 
+        training.
 
         Args:
             None
@@ -100,16 +101,29 @@ class RobustCurriculumCallback(BaseCallback):
         w_m, h_m = np.random.uniform(min_m, max_m, size=2)
 
         lat_off = (h_m / 2.0) / 111_320.0
-        lon_off = (w_m / 2.0) / (111_320.0 * np.cos(np.radians(self.origin[0])))
+        lon_off = (w_m / 2.0) / (
+            111_320.0 * np.cos(
+            np.radians(
+                self.origin[0]
+                )
+            )
+        )
 
-        tl = (self.origin[0] + lat_off, self.origin[1] - lon_off)
-        br = (self.origin[0] - lat_off, self.origin[1] + lon_off)
+        tl = (
+            self.origin[0] + lat_off, 
+            self.origin[1] - lon_off
+        )
+        br = (
+            self.origin[0] - lat_off, 
+            self.origin[1] + lon_off
+        )
 
         return tl, br, w_m, h_m
 
     def _add_drone(self):
         """
-        Adds a new drone to the environment at the origin with a random heading.
+        Adds a new drone to the environment at the origin with a random 
+        heading.
         """
         env = self.training_env.envs[0].unwrapped
         new_id = f"UAV-{len(env.aircraft_list) + 1}"
@@ -130,7 +144,8 @@ class RobustCurriculumCallback(BaseCallback):
 
     def _update_drone_count(self):
         """
-        Updates the number of drones in the environment to match the current phase of the curriculum.
+        Updates the number of drones in the environment to match the current 
+        phase of the curriculum.
         """
         _, _, _, target_uavs = self._get_curriculum_phase()
         env = self.training_env.envs[0].unwrapped
@@ -166,7 +181,8 @@ class RobustCurriculumCallback(BaseCallback):
             phase = self.curriculum[phase_idx]
 
             save_path = os.path.join(
-                self.save_dir, f"a2c_phase_{phase_idx}_step_{self.num_timesteps}"
+                self.save_dir, 
+                f"a2c_phase_{phase_idx}_step_{self.num_timesteps}"
             )
             self.model.save(save_path)
 
@@ -236,7 +252,8 @@ def train(config):
     tl = (origin[0] + lat_off, origin[1] - lon_off)
     br = (origin[0] - lat_off, origin[1] + lon_off)
 
-    # dt: Time step size for physics simulation (smaller values yield more realistic simulation)
+    # dt: Time step size for physics simulation 
+    # (smaller values yield more realistic simulation)
     env = MultiUAVEnv(
         initial_uavs, 
         tl=tl, 
@@ -275,10 +292,19 @@ def train(config):
             progress_bar=True,
             tb_log_name=config["train"]["model_name"],
         )
-        model.save(config["train"]["model_name"])
+        model.save(
+            os.path.join(
+                config["train"]["save_dir"], 
+                config["train"]["model_name"]
+            )
+        )
     except KeyboardInterrupt:
-        model.save(f"{config['train']['model_name']}_interrupted")
-
+        model.save(
+            os.path.join(
+                config["train"]["save_dir"], 
+                f"{config['train']['model_name']}_interrupted"
+            )
+        )
 
 if __name__ == "__main__":
     print()
