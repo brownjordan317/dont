@@ -15,10 +15,7 @@ class FlightDynamics:
     
     def compute_turn(self, current_heading: float, target_bearing: float, 
                     dt: float) -> Tuple[float, float]:
-        """
-        Compute turn amount and new heading
-        Returns: (new_heading, turn_amount)
-        """
+        """Compute new heading and turn amount"""
         heading_error = wrap_angle(target_bearing - current_heading)
         max_turn = self.max_turn_rate * dt
         
@@ -34,10 +31,7 @@ class FlightDynamics:
     
     def compute_arc_motion(self, x: float, y: float, heading: float, 
                           turn_amount: float) -> Tuple[float, float]:
-        """
-        Compute new position after turning
-        Returns: (new_x, new_y)
-        """
+        """Compute new position after turning"""
         R = self.turning_radius
         
         # Determine turn center
@@ -59,10 +53,7 @@ class FlightDynamics:
     
     def compute_straight_motion(self, x: float, y: float, heading: float, 
                                distance: float) -> Tuple[float, float]:
-        """
-        Compute new position after straight flight
-        Returns: (new_x, new_y)
-        """
+        """Compute new position after straight flight"""
         new_x = x + distance * np.cos(heading)
         new_y = y + distance * np.sin(heading)
         return new_x, new_y

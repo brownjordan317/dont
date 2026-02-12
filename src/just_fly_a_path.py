@@ -47,16 +47,7 @@ def test_physics_with_visuals():
     
     for i in range(total_steps):
         for ac in uavs:
-            ac.update(dt)
-            
-            # Simple waypoint arrival check for manual test
-            # simulator.py handles this, but let's ensure they have targets
-            if ac.waypoint_manager.current_waypoint:
-                from geopy.distance import geodesic
-                dist = geodesic(ac.position.to_tuple(), 
-                               ac.waypoint_manager.current_waypoint.to_tuple()).meters
-                if ac.waypoint_manager.check_arrival(dist):
-                    ac.waypoint_manager.advance()
+            ac.update(dt)  # simulator.py handles waypoint arrival internally
 
         # 4. Generate Visuals every 5 steps
         if i % 5 == 0:

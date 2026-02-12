@@ -1,7 +1,6 @@
 import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
-from geopy.distance import geodesic
 from itertools import combinations
 
 # Local imports
@@ -18,8 +17,8 @@ class MultiUAVEnv(gym.Env):
             boundary_margin=0.15,
             mission_waypoint_count=3,
             mode='gen_mission', #gen_mission or manual_mission
-            caution_dist=100.0,
-            critical_dist=35.0
+            caution_dist=30.0,
+            critical_dist=3.0
         ):
         super().__init__()
         self.aircraft_list = aircraft_list
@@ -50,6 +49,10 @@ class MultiUAVEnv(gym.Env):
             dtype=np.float32
         )
         self.current_step = 0
+        
+        # OPTIMIZATION: Pre-allocate observation arrays to avoid repeated allocation
+        self._obs_buffer = np.zeros(self.max_uavs * self.obs_per_uav, dtype=np.float32)
+        self._zero_obs = np.zeros(self.obs_per_uav, dtype=np.float32)
 
     def update_bounds(self, tl, br):
         self.min_lat, self.max_lat = sorted([tl[0], br[0]])
@@ -75,54 +78,67 @@ class MultiUAVEnv(gym.Env):
             ac.waypoint_manager.add_waypoint(wp)
 
     def _check_line_segment_arrival(self, p1_geo, p2_geo, wp_geo, radius):
+        # OPTIMIZATION: Avoid repeated tuple unpacking - pass pre-converted local coords
         a = np.array(self.transformer.geo_to_local(p1_geo[0], p1_geo[1]))
         b = np.array(self.transformer.geo_to_local(p2_geo[0], p2_geo[1]))
         p = np.array(self.transformer.geo_to_local(wp_geo[0], wp_geo[1]))
         
         ap = p - a
         ab = b - a
-        t = np.clip(np.dot(ap, ab) / (np.dot(ab, ab) + 1e-9), 0, 1)
+        ab_dot = np.dot(ab, ab) + 1e-9
+        t = np.clip(np.dot(ap, ab) / ab_dot, 0, 1)
         closest_point = a + t * ab
         distance_to_segment = np.linalg.norm(p - closest_point)
         return distance_to_segment < radius
+    
+    def _compute_local_distance(self, pos1_tuple, pos2_tuple):
+        """
+        OPTIMIZATION: Use local coordinate system for distance calculations.
+        Faster than geodesic for small distances (<1km).
+        """
+        p1 = self.transformer.geo_to_local(pos1_tuple[0], pos1_tuple[1])
+        p2 = self.transformer.geo_to_local(pos2_tuple[0], pos2_tuple[1])
+        return np.hypot(p2[0] - p1[0], p2[1] - p1[1])
 
     def _get_neighbor_obs(self, subject_idx, num_neighbors=2):
-        neighbor_features = []
+        """OPTIMIZATION: Reduced geodesic calls, compute local distances once"""
         subject_ac = self.aircraft_list[subject_idx]
         
         v1_x = subject_ac.dynamics.cruise_speed * np.sin(subject_ac.heading)
         v1_y = subject_ac.dynamics.cruise_speed * np.cos(subject_ac.heading)
         
+        # OPTIMIZATION: Pre-convert subject position to local once
+        subject_local = self.transformer.geo_to_local(
+            *subject_ac.position.to_tuple()
+        )
+        
+        # OPTIMIZATION: Build distance list without geodesic in loop
         others = []
         for i, ac in enumerate(self.aircraft_list):
-            if i == subject_idx: continue
-            dist = geodesic(
-                subject_ac.position.to_tuple(), 
-                ac.position.to_tuple()).meters
-            others.append((dist, ac))
+            if i == subject_idx: 
+                continue
             
+            # Use local distance computation (faster than geodesic for <1km)
+            other_local = self.transformer.geo_to_local(*ac.position.to_tuple())
+            dx = other_local[0] - subject_local[0]
+            dy = other_local[1] - subject_local[1]
+            dist = np.hypot(dx, dy)
+            
+            others.append((dist, ac, dx, dy))
+        
         others.sort(key=lambda x: x[0])
         
         sensing_radius = 500.0
+        neighbor_features = []
+        
         for i in range(num_neighbors):
             if i < len(others):
-                dist, other_ac = others[i]
-                v2_x = other_ac.dynamics.cruise_speed * np.sin(
-                    other_ac.heading
-                )
-                v2_y = other_ac.dynamics.cruise_speed * np.cos(
-                    other_ac.heading
-                )
+                dist, other_ac, dx, dy = others[i]
+                
+                v2_x = other_ac.dynamics.cruise_speed * np.sin(other_ac.heading)
+                v2_y = other_ac.dynamics.cruise_speed * np.cos(other_ac.heading)
+                
                 rvx, rvy = v1_x - v2_x, v1_y - v2_y
-                
-                p1 = self.transformer.geo_to_local(
-                    *subject_ac.position.to_tuple()
-                )
-                p2 = self.transformer.geo_to_local(
-                    *other_ac.position.to_tuple()
-                )
-                dx, dy = p2[0] - p1[0], p2[1] - p1[1]
-                
                 v_closing = (rvx * dx + rvy * dy) / (dist + 1e-6)
                 ttc = dist / v_closing if v_closing > 0 else 50.0 
                 
@@ -138,23 +154,22 @@ class MultiUAVEnv(gym.Env):
                 ])
             else:
                 neighbor_features.extend([1.0, 1.0, 0.0, 0.0, 0.0, 0.0])
+        
         return neighbor_features
 
     def _get_uav_obs(self, idx):
         if idx >= len(self.aircraft_list): 
-            return np.zeros(self.obs_per_uav)
+            return self._zero_obs  # OPTIMIZATION: Return pre-allocated zeros
             
         ac = self.aircraft_list[idx]
         
-        # FIX: Removed the "if LOITERING return zeros" check. 
-        # Drones must always be visible to others.
-        
         wp = ac.waypoint_manager.current_waypoint
         if wp:
-            dist_wp = geodesic(
+            # OPTIMIZATION: Use local distance instead of geodesic
+            dist_wp = self._compute_local_distance(
                 ac.position.to_tuple(), 
                 wp.to_tuple()
-            ).meters
+            )
             brg_wp = np.arctan2(
                 wp.longitude - ac.position.longitude, 
                 wp.latitude - ac.position.latitude
@@ -163,10 +178,13 @@ class MultiUAVEnv(gym.Env):
         else:
             dist_wp, rel_brg_wp = 1000.0, 0.0
         
+        # OPTIMIZATION: Pre-compute sin/cos for heading
+        sin_hdg, cos_hdg = np.sin(ac.heading), np.cos(ac.heading)
+        
         nav_obs = [
             np.clip(dist_wp / 1000.0, 0, 1.0), 
             np.sin(rel_brg_wp), np.cos(rel_brg_wp),
-            np.sin(ac.heading), np.cos(ac.heading),
+            sin_hdg, cos_hdg,
             ac.dynamics.cruise_speed / 30.0,
             1.0 if ac.waypoint_manager.has_waypoints() else 0.0,
             0.0, 0.0, 0.0 
@@ -177,18 +195,20 @@ class MultiUAVEnv(gym.Env):
         return np.array(nav_obs + neighbor_obs, dtype=np.float32)
     
     def _calculate_collision_rewards(self, rewards_list):
-        # FIX: Smoother gradients. We use a linear penalty that is less likely to cause circling.
+        """OPTIMIZATION: Use local distances instead of geodesic"""
         for i1, i2 in combinations(range(len(self.aircraft_list)), 2):
             ac1, ac2 = self.aircraft_list[i1], self.aircraft_list[i2]
-            sep = geodesic(
-                ac1.position.to_tuple(), 
+            
+            # Use local distance (faster than geodesic)
+            sep = self._compute_local_distance(
+                ac1.position.to_tuple(),
                 ac2.position.to_tuple()
-            ).meters
+            )
             
             if sep < self.caution_dist:
                 # Severity 0.0 at caution_dist, 1.0 at 0m
                 severity = 1.0 - (sep / self.caution_dist)
-                penalty = -5.0 * severity  # Scaled down from -2000
+                penalty = -5.0 * severity
                 
                 if sep < self.critical_dist:
                     # Quadratic spike only at very close range
@@ -197,6 +217,7 @@ class MultiUAVEnv(gym.Env):
                 
                 rewards_list[i1] += penalty
                 rewards_list[i2] += penalty
+        
         return rewards_list
     
     def step(self, actions):
@@ -204,7 +225,7 @@ class MultiUAVEnv(gym.Env):
         uav_rewards = [0.0] * len(self.aircraft_list)
 
         for i, ac in enumerate(self.aircraft_list):
-            # Maintain the original loiter update logic
+            # Handle loitering aircraft
             if ac.flight_mode == FlightMode.LOITERING:
                 lx, ly = self.transformer.geo_to_local(
                     ac.position.latitude, 
@@ -214,26 +235,17 @@ class MultiUAVEnv(gym.Env):
                 continue
 
             wp = ac.waypoint_manager.current_waypoint
-            if not wp: continue
+            if not wp: 
+                continue
 
             pos_prev = ac.position.to_tuple()
-            dist_before = geodesic(pos_prev, wp.to_tuple()).meters
+            
+            # OPTIMIZATION: Use local distance instead of geodesic
+            dist_before = self._compute_local_distance(pos_prev, wp.to_tuple())
             
             # Physics Update
             turn_rate = actions[i] * ac.dynamics.max_turn_rate
-            ac.heading = wrap_angle(ac.heading + (turn_rate * self.dt))
-            dist_moved = ac.dynamics.cruise_speed * self.dt
-            
-            dx, dy = dist_moved * np.sin(ac.heading), dist_moved * np.cos(ac.heading)
-            curr_x, curr_y = self.transformer.geo_to_local(
-                pos_prev[0], 
-                pos_prev[1]
-            )
-            new_lat, new_lon = self.transformer.local_to_geo(
-                curr_x + dx, 
-                curr_y + dy
-            )
-            ac.position = Position(new_lat, new_lon)
+            ac.update_simple(turn_rate, self.dt, self.transformer)
             pos_curr = ac.position.to_tuple()
 
             # Sequential Arrival Logic (Segment Check)
@@ -245,17 +257,20 @@ class MultiUAVEnv(gym.Env):
             )
 
             # Reward Shaping
-            dist_after = geodesic(pos_curr, wp.to_tuple()).meters
-            hdg_to_wp = np.arctan2(wp.longitude-new_lon, wp.latitude-new_lat)
+            dist_after = self._compute_local_distance(pos_curr, wp.to_tuple())
+            hdg_to_wp = np.arctan2(
+                wp.longitude - pos_curr[1], 
+                wp.latitude - pos_curr[0]
+            )
             hdg_err = abs(wrap_angle(hdg_to_wp - ac.heading))
             
             # Efficiency Rewards (Dense)
             uav_rewards[i] = ((dist_before - dist_after) * 4.0) + (np.cos(hdg_err) * 2.0)
-            uav_rewards[i] -= 0.5 * (actions[i]**2) # Smoothness
-            uav_rewards[i] -= 0.1 # Step penalty
+            uav_rewards[i] -= 0.5 * (actions[i]**2)  # Smoothness
+            uav_rewards[i] -= 0.1  # Step penalty
             
             if arrived:
-                uav_rewards[i] += 3000.0 # High bonus for arrival
+                uav_rewards[i] += 3000.0  # High bonus for arrival
                 ac.waypoint_manager.advance()
                 if self.mode == 'gen_mission':
                     self._refill_mission(ac)
@@ -265,7 +280,8 @@ class MultiUAVEnv(gym.Env):
                 ac._enter_loiter()
 
             # Geofence Penalty
-            if not (self.min_lat < new_lat < self.max_lat) or not (self.min_lon < new_lon < self.max_lon):
+            if not (self.min_lat < pos_curr[0] < self.max_lat) or \
+               not (self.min_lon < pos_curr[1] < self.max_lon):
                 uav_rewards[i] -= 50.0
 
         if len(self.aircraft_list) > 1:
@@ -274,10 +290,13 @@ class MultiUAVEnv(gym.Env):
         done = self.current_step >= self.max_steps or \
                all(not ac.waypoint_manager.has_waypoints() for ac in self.aircraft_list)
 
-        obs = np.concatenate([self._get_uav_obs(j) for j in range(self.max_uavs)]).astype(np.float32)
+        # OPTIMIZATION: Use pre-allocated buffer and fill in-place
+        for j in range(self.max_uavs):
+            start_idx = j * self.obs_per_uav
+            end_idx = start_idx + self.obs_per_uav
+            self._obs_buffer[start_idx:end_idx] = self._get_uav_obs(j)
 
-        # Return the sum of rewards as requested, but we've balanced the individual components.
-        return obs, sum(uav_rewards), done, False, \
+        return self._obs_buffer.copy(), sum(uav_rewards), done, False, \
             {"waypoints_hit": sum(len(ac.waypoint_manager.hit_waypoints) for ac in self.aircraft_list)}
 
     def reset(self, seed=None):
@@ -295,5 +314,10 @@ class MultiUAVEnv(gym.Env):
                 self._refill_mission(ac)
             ac.waypoint_manager.hit_waypoints.clear()
         
-        obs = np.concatenate([self._get_uav_obs(j) for j in range(self.max_uavs)]).astype(np.float32)
-        return obs, {}
+        # OPTIMIZATION: Use pre-allocated buffer
+        for j in range(self.max_uavs):
+            start_idx = j * self.obs_per_uav
+            end_idx = start_idx + self.obs_per_uav
+            self._obs_buffer[start_idx:end_idx] = self._get_uav_obs(j)
+        
+        return self._obs_buffer.copy(), {}

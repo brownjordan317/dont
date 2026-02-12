@@ -30,14 +30,6 @@ class Position:
         return cls(latitude=pos[0], longitude=pos[1])
 
 
-@dataclass
-class FlightState:
-    """Current flight state"""
-    position: Position
-    heading: float  # radians
-    speed: float  # m/s
-    
-    
 class FlightMode(Enum):
     """Flight mode enumeration"""
     NAVIGATING = "NAVIGATING"

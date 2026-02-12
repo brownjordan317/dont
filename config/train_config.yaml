@@ -7,7 +7,7 @@ train:
   model_name: "a2c_uav_curriculum" # The name of the model to save
   learning_rate: 1e-4 # The learning rate of the optimizer
   max_grad_norm: 0.5 # The maximum value for the gradient clipping
-  ent_coeff: 0.01 # Entropy coefficient
+  ent_coeff: 0.05 # Entropy coefficient
   vf_coeff: 0.25 # Value function coefficient
   policy_kwargs: # The hyperparameters of the policy
       net_arch: [512, 512] # The network architecture
