@@ -40,13 +40,7 @@ def create_test_environment(scenario, origin, config):
     tl = (origin[0] + lat_off, origin[1] - lon_off)
     br = (origin[0] - lat_off, origin[1] + lon_off)
     
-    env = MultiUAVEnv(
-        uavs, 
-        tl=tl, 
-        br=br, 
-        dt=0.05, 
-        mode=config["test"]["mode"]
-    )
+    env = MultiUAVEnv(uavs, tl=tl, br=br, dt=0.05, mode=config["test"]["mode"])
     return env, tl, br
 
 
