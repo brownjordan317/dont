@@ -3,7 +3,10 @@ test:
   model_path: "models/a2c_uav_curriculum.zip" # The path to the trained model to test
   test_name: "test"
   save_dir: "reports"
-  
+  wp_hit_radius: 30 # The radius in meters for counting a waypoint as reached
+  caution_dist: 30 # This is the distance between each other that drones start becoming nervous
+  critical_dist: 3 # This is the critical distance that will lead the system to a crash
+
   # Video settings (NEW)
   create_video: true      # Set to false to skip video creation
   video_fps: 30           # Frames per second (24-60)

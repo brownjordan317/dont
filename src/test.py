@@ -119,8 +119,8 @@ def run_and_record_episode(model, env, transformer, max_steps):
 # ================================================================
 
 def create_video(uav_data, tl, br, transformer,
-                 scenario_name, total_reward,
-                 arrivals, save_path,
+                 scenario_name, _,
+                 arrivals, save_path, config,
                  fps=30, speed_multiplier=1):
 
     console.print("[cyan]Creating video...[/cyan]")
@@ -158,9 +158,13 @@ def create_video(uav_data, tl, br, transformer,
         trail = ax.scatter([], [], s=20, zorder=10)
 
         # Safety circles
-        c30 = Circle((0, 0), 30, color=color, fill=False,
+        c30 = Circle((0, 0), 
+                     config["test"]["caution_dist"], 
+                     color=color, fill=False,
                      linestyle='--', alpha=0.35)
-        c5 = Circle((0, 0), 5, color=color, fill=True,
+        c5 = Circle((0, 0), 
+                    config["test"]["critical_dist"], 
+                    color=color, fill=True,
                     alpha=0.2)
 
         ax.add_patch(c30)
@@ -275,9 +279,9 @@ def create_video(uav_data, tl, br, transformer,
             # ACTIVE WAYPOINT PULSE (NO TRAIL RESET)
             # ======================================================
 
-            MAX_GLOW_RADIUS = 30
-            MIN_GLOW_RADIUS = 20
-            PULSE_SPEED = 0.05
+            max_glow_radius = int(config["test"]["wp_hit_radius"])
+            min_glow_radius = int(int(config["test"]["wp_hit_radius"]) * 0.7)
+            pulse_speed = 0.05
 
             if step < len(art['current_targets']):
                 target = art['current_targets'][step]
@@ -286,14 +290,14 @@ def create_video(uav_data, tl, br, transformer,
 
                     art['last_target'] = target
 
-                    pulse = MIN_GLOW_RADIUS + \
-                            (MAX_GLOW_RADIUS - MIN_GLOW_RADIUS) * \
-                            (0.5 * (1 + np.sin(frame_num * PULSE_SPEED)))
+                    pulse = min_glow_radius + \
+                            (max_glow_radius - min_glow_radius) * \
+                            (0.5 * (1 + np.sin(frame_num * pulse_speed)))
 
                     art['glow'].set_center(target)
                     art['glow'].set_radius(pulse)
 
-                    alpha_scale = pulse / MAX_GLOW_RADIUS
+                    alpha_scale = pulse / max_glow_radius
                     art['glow'].set_alpha(0.25 * alpha_scale)
 
                 else:
@@ -365,7 +369,7 @@ def test(config):
 
     env, tl, br = create_test_environment(scenario_info, origin, config)
 
-    uav_data, steps, total_reward, arrivals = run_and_record_episode(
+    uav_data, _, total_reward, arrivals = run_and_record_episode(
         model, env, env.transformer,
         config["test"]["env"]["max_steps"]
     )
@@ -387,6 +391,7 @@ def test(config):
             total_reward,
             arrivals,
             vid_path,
+            config,
             fps=config["test"].get("video_fps", 30),
             speed_multiplier=config["test"].get("video_speed", 1)
         )
