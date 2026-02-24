@@ -1,1 +1,7 @@
 *.pyc
+src/__pycache__/
+src/gym_env/__pycache__/
+src/flight_engine/__pycache__/
+physics_frames/
+training_logs/
+.vscode/

@@ -30,6 +30,7 @@ class MultiUAVEnv(gym.Env):
         self.mode = mode
         self.caution_dist = caution_dist
         self.critical_dist = critical_dist
+        self.crit_dist_breakers = ()
         
         # Telemetry
         self.update_bounds(tl, br)
@@ -214,6 +215,8 @@ class MultiUAVEnv(gym.Env):
                     # Quadratic spike only at very close range
                     danger_severity = (1.0 - (sep / self.critical_dist)) ** 2
                     penalty += -50.0 * danger_severity
+
+                    self.crit_dist_breakers.append((ac1.id, ac2.id))
                 
                 rewards_list[i1] += penalty
                 rewards_list[i2] += penalty

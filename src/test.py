@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle, Circle
 from matplotlib import colors as mcolors
 from matplotlib.animation import FuncAnimation, FFMpegWriter
-from stable_baselines3 import A2C
+from stable_baselines3 import A2C, PPO, SAC
 from rich.console import Console
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeRemainingColumn
@@ -74,11 +74,10 @@ def run_and_record_episode(model, env, transformer, max_steps):
         })
 
     done = False
-    truncated = False
     step = 0
     total_reward = 0
 
-    while not (done or truncated) and step < max_steps:
+    while not done and step < max_steps:
         for i, ac in enumerate(env.aircraft_list):
             pos = ac.position.to_tuple()
             x, y = transformer.geo_to_local(pos[0], pos[1])
@@ -98,7 +97,7 @@ def run_and_record_episode(model, env, transformer, max_steps):
                 uav_data[i]['current_targets'].append(None)
 
         action, _ = model.predict(obs, deterministic=True)
-        obs, reward, done, truncated, info = env.step(action)
+        obs, reward, done, _, info = env.step(action)
 
         for i, ac in enumerate(env.aircraft_list):
             if hasattr(ac, 'last_waypoint_hit_pos') and ac.last_waypoint_hit_pos:
@@ -346,8 +345,6 @@ def create_video(uav_data, tl, br, transformer,
 
     plt.close()
 
-
-
 # ================================================================
 # TEST ENTRY
 # ================================================================
@@ -356,7 +353,18 @@ def test(config):
     console.print(Panel.fit("[bold white]Flight Path Visualizer[/bold white]"))
     os.makedirs(config["test"]["save_dir"], exist_ok=True)
 
-    model = A2C.load(config["test"]["model_path"], device='cpu')
+    algo = config["test"].get("algorithm", "SAC").upper()
+    if algo == "SAC":
+        model_cls = SAC
+    elif algo == "A2C":
+        model_cls = A2C
+    elif algo == "PPO":
+        model_cls = PPO
+
+    model = model_cls.load(
+        config["test"]["model_path"], 
+        device=config["test"].get("device", "cpu")
+    )
     origin = [
         float(config["test"]["env"]["origin"][0]),
         float(config["test"]["env"]["origin"][1])

@@ -4,17 +4,40 @@ train:
   # ------------------------------------------
   # Stable Baselines3 hyperparameters
   # ------------------------------------------
-  model_name: "a2c_uav_curriculum" # The name of the model to save
-  learning_rate: 1e-4 # The learning rate of the optimizer
-  max_grad_norm: 0.5 # The maximum value for the gradient clipping
-  ent_coeff: 0.05 # Entropy coefficient
-  vf_coeff: 0.25 # Value function coefficient
-  policy_kwargs: # The hyperparameters of the policy
-      net_arch: [512, 512] # The network architecture
-  tensorboard_log: "./training_logs/" # The path to the tensorboard log
-  verbose: 0 # Verbosity level
-  device: "cpu" # The device to train on
-  save_dir: "./models_2/" # The path to save the trained models
+  algorithm: "PPO"                    # SAC | PPO | A2C
+  model_name: "ppo_uav_curriculum"    # Used for tensorboard log name and final save filename
+  save_dir: "./models_ppo/"
+  tensorboard_log: "./training_logs/"
+  verbose: 0
+  device: "cpu" # use the cpu for PPO and A2C, and the GPU (cuda) for SAC
+
+  # SAC hyperparameters (ignored for PPO/A2C)
+  buffer_size: 1_000_000
+  learning_starts: 10_000
+  tau: 0.005
+  ent_coef: "auto"
+  target_update_interval: 1
+  train_freq: 1
+  gradient_steps: 1
+  buffer_clear_fraction: 0.5    # Fraction of replay buffer cleared at phase transitions
+
+  # PPO hyperparameters (ignored for SAC/A2C)
+  n_epochs: 10       # How many times to reuse each rollout
+  gae_lambda: 0.95    # GAE smoothing factor
+  clip_range: 0.2      # PPO clipping parameter
+
+  # ------------------------------------------
+  # Shared hyperparameters (SAC + PPO + A2C)
+  # ------------------------------------------
+  learning_rate: 1e-4
+  batch_size: 256     # Note: PPO requires batch_size to divide n_steps evenly
+  gamma: 0.99
+  ent_coef: 0.05   # Ignored by SAC (uses ent_coef above instead)
+  vf_coef: 0.25   # Value function loss weight (PPO + A2C only)
+  max_grad_norm: 0.5  # Gradient clipping (PPO + A2C only)
+  n_steps: 2048  # Rollout length (PPO + A2C only)
+  policy_kwargs:
+    net_arch: [512, 512]
 
   # ------------------------------------------
   # Flight Simulator

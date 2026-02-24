@@ -16,4 +16,4 @@ test:
 	$(PYTHON) $(SRC)/deconfliction_factory.py --mode test
 
 physics:
-	$(PYTHON) $(SRC)/test_physics.py
+	$(PYTHON) $(SRC)/just_fly_a_path.py
