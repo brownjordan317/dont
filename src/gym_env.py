@@ -1,306 +1,257 @@
 import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
-from itertools import combinations
-
-# Local imports
 from flight_engine.helpers import wrap_angle, Position, FlightMode
 from flight_engine.trans_coorders import CoordinateTransformer
 
 class MultiUAVEnv(gym.Env):
-    def __init__(
-            self, 
-            aircraft_list, 
-            tl, br, 
-            dt=0.3, 
-            max_steps=10_000,
-            boundary_margin=0.15,
-            mission_waypoint_count=3,
-            mode='gen_mission', #gen_mission or manual_mission
-            caution_dist=30.0,
-            critical_dist=3.0
-        ):
+    def __init__(self, aircraft_list, tl, br, dt=0.3, max_steps=10_000, boundary_margin=0.15, 
+                 mission_waypoint_count=3, mode='gen_mission', caution_dist=30.0, critical_dist=3.0):
         super().__init__()
         self.aircraft_list = aircraft_list
         self.max_uavs = 5
-        self.dt = dt
-        self.max_steps = max_steps
+        self.dt, self.max_steps = dt, max_steps
         self.boundary_margin = boundary_margin
         self.mission_waypoint_count = mission_waypoint_count
         self.mode = mode
-        self.caution_dist = caution_dist
-        self.critical_dist = critical_dist
-        self.crit_dist_breakers = ()
-        
-        # Telemetry
-        self.update_bounds(tl, br)
+        self.caution_dist, self.critical_dist = caution_dist, critical_dist
+        self.crit_dist_breakers = []
 
-        # Observation: [Nav(10), Neighbors(12)]
+        self.update_bounds(tl, br)
         self.obs_per_uav = 22
+        
         self.observation_space = spaces.Box(
-            low=-np.inf,
-            high=np.inf, 
-            shape=(self.max_uavs * self.obs_per_uav,),
+            low=-np.inf, high=np.inf, 
+            shape=(self.max_uavs * self.obs_per_uav,), 
             dtype=np.float32
         )
-        
         self.action_space = spaces.Box(
             low=-1.0, high=1.0, 
-            shape=(self.max_uavs,), 
-            dtype=np.float32
+            shape=(self.max_uavs,), dtype=np.float32
         )
         self.current_step = 0
+
+        # Preallocated buffers
+        self._obs_buffer = np.zeros(
+            self.max_uavs * self.obs_per_uav, 
+            dtype=np.float32
+        )
+        self._local_pos_cache = np.zeros((self.max_uavs, 2))
+        self._prev_local_cache = np.zeros((self.max_uavs, 2))
+        self._wp_local_cache = np.zeros((self.max_uavs, 2))
+        self._dx_matrix = np.zeros((self.max_uavs, self.max_uavs))
+        self._dy_matrix = np.zeros((self.max_uavs, self.max_uavs))
+        self._dist_matrix = np.zeros((self.max_uavs, self.max_uavs))
+
+    def step(self, actions):
+        self.current_step += 1
+        n = len(self.aircraft_list)
+        rewards = np.zeros(n)
+        actions = np.asarray(actions)[:n]
+
+        # 1. Batch Transformation: Pre-move state & Waypoints
+        lats = [ac.position.latitude for ac in self.aircraft_list]
+        lons = [ac.position.longitude for ac in self.aircraft_list]
         
-        # OPTIMIZATION: Pre-allocate observation arrays to avoid repeated allocation
-        self._obs_buffer = np.zeros(self.max_uavs * self.obs_per_uav, dtype=np.float32)
-        self._zero_obs = np.zeros(self.obs_per_uav, dtype=np.float32)
+        # We transform all current positions at once
+        x_vals, y_vals = self.transformer.geo_to_local(lats, lons)
+        self._prev_local_cache[:n, 0] = x_vals
+        self._prev_local_cache[:n, 1] = y_vals
+
+        # Collect waypoint coordinates (only for aircraft that have them)
+        wp_indices = []
+        wp_lats, wp_lons = [], []
+        for i, ac in enumerate(self.aircraft_list):
+            wp = ac.waypoint_manager.current_waypoint
+            if wp:
+                wp_indices.append(i)
+                wp_lats.append(wp.latitude)
+                wp_lons.append(wp.longitude)
+        
+        if wp_indices:
+            wx, wy = self.transformer.geo_to_local(wp_lats, wp_lons)
+            self._wp_local_cache[wp_indices, 0] = wx
+            self._wp_local_cache[wp_indices, 1] = wy
+
+        dist_before = np.linalg.norm(
+            self._wp_local_cache[:n] - self._prev_local_cache[:n], 
+            axis=1
+        )
+
+        # 2. Physics update
+        for i, ac in enumerate(self.aircraft_list):
+            if ac.flight_mode == FlightMode.LOITERING:
+                ac._update_loiter(*self._prev_local_cache[i], self.dt, self.transformer)
+            else:
+                ac.update_simple(actions[i] * ac.dynamics.max_turn_rate, self.dt, self.transformer)
+
+        # 3. Batch Transformation: Post-move state
+        lats_post = [ac.position.latitude for ac in self.aircraft_list]
+        lons_post = [ac.position.longitude for ac in self.aircraft_list]
+        px, py = self.transformer.geo_to_local(lats_post, lons_post)
+        self._local_pos_cache[:n, 0] = px
+        self._local_pos_cache[:n, 1] = py
+
+        # 4. Collision Reward Calculation
+        if n > 1:
+            self._dx_matrix[:n, :n] = self._local_pos_cache[:n, None, 0] - self._local_pos_cache[None, :n, 0]
+            self._dy_matrix[:n, :n] = self._local_pos_cache[:n, None, 1] - self._local_pos_cache[None, :n, 1]
+            self._dist_matrix[:n, :n] = np.hypot(self._dx_matrix[:n, :n], self._dy_matrix[:n, :n])
+            self._calculate_collision_rewards(rewards)
+
+        # 5. Nav Rewards & Waypoint Management
+        dist_after = np.linalg.norm(self._wp_local_cache[:n] - self._local_pos_cache[:n], axis=1)
+        
+        for i, ac in enumerate(self.aircraft_list):
+            # Heading error logic
+            dx_wp = self._wp_local_cache[i, 0] - self._local_pos_cache[i, 0]
+            dy_wp = self._wp_local_cache[i, 1] - self._local_pos_cache[i, 1]
+            hdg_to_wp = np.arctan2(dx_wp, dy_wp)
+            hdg_err = np.abs((hdg_to_wp - ac.heading + np.pi) % (2 * np.pi) - np.pi)
+
+            rewards[i] += (dist_before[i] - dist_after[i]) * 4.0
+            rewards[i] += np.cos(hdg_err) * 2.0
+            rewards[i] -= 0.5 * (actions[i] ** 2)
+            rewards[i] -= 0.1
+
+            wm = ac.waypoint_manager
+            if wm.current_waypoint:
+                if self._check_line_segment_arrival_local(
+                    self._prev_local_cache[i], self._local_pos_cache[i], 
+                    self._wp_local_cache[i], wm.arrival_threshold
+                ):
+                    rewards[i] += 3000.0
+                    wm.advance()
+                    if self.mode == 'gen_mission': self._refill_mission(ac)
+                    wm.hit_waypoints.append(wm.current_waypoint)
+                
+                if not wm.has_waypoints(): ac._enter_loiter()
+
+            if not (self.min_lat < ac.position.latitude < self.max_lat and 
+                    self.min_lon < ac.position.longitude < self.max_lon):
+                rewards[i] -= 50.0
+
+        self._update_obs_buffer() 
+
+        done = self.current_step >= self.max_steps or all(not ac.waypoint_manager.has_waypoints() for ac in self.aircraft_list)
+        return self._obs_buffer.copy(), float(rewards.sum()), done, False, {"waypoints_hit": sum(len(ac.waypoint_manager.hit_waypoints) for ac in self.aircraft_list)}
+
+    def _update_obs_buffer(self):
+        n = len(self.aircraft_list)
+        # 1. Gather basic states
+        headings = np.array([ac.heading for ac in self.aircraft_list], dtype=np.float32)
+        speeds = np.array([ac.dynamics.cruise_speed for ac in self.aircraft_list], dtype=np.float32)
+        has_wp = np.array([1.0 if ac.waypoint_manager.has_waypoints() else 0.0 for ac in self.aircraft_list], dtype=np.float32)
+
+        # 2. Vectorized Waypoint Navigation
+        d_wp = self._wp_local_cache[:n] - self._local_pos_cache[:n]
+        dist_wp = np.linalg.norm(d_wp, axis=1)
+        brg_wp = np.arctan2(d_wp[:, 0], d_wp[:, 1])
+        rel_brg_wp = ((brg_wp - headings + np.pi) % (2 * np.pi)) - np.pi # Manual wrap_angle
+
+        # 3. Vectorized Neighbor Selection
+        masked_dist = self._dist_matrix[:n, :n].copy()
+        np.fill_diagonal(masked_dist, np.inf)
+        nearest_idx = np.argsort(masked_dist, axis=1)[:, :2]
+        
+        # 4. Fill the buffer
+        obs_temp = np.zeros((self.max_uavs, self.obs_per_uav), dtype=np.float32)
+        for i in range(n):
+            # Self features (10 dims)
+            self_feat = [
+                np.clip(dist_wp[i] / 1000.0, 0, 1.0),
+                np.sin(rel_brg_wp[i]), np.cos(rel_brg_wp[i]),
+                np.sin(headings[i]), np.cos(headings[i]),
+                speeds[i] / 30.0,
+                has_wp[i], 0.0, 0.0, 0.0
+            ]
+            
+            # Neighbor features (6 dims * 2 neighbors)
+            neigh_feat = []
+            v1_x, v1_y = speeds[i] * np.sin(headings[i]), speeds[i] * np.cos(headings[i])
+            for nb_idx in nearest_idx[i]:
+                dist = masked_dist[i, nb_idx]
+                if dist == np.inf:
+                    neigh_feat.extend([1.0, 1.0, 0.0, 0.0, 0.0, 0.0])
+                    continue
+                
+                dx, dy = self._dx_matrix[i, nb_idx], self._dy_matrix[i, nb_idx]
+                other_ac = self.aircraft_list[nb_idx]
+                v2_x = other_ac.dynamics.cruise_speed * np.sin(other_ac.heading)
+                v2_y = other_ac.dynamics.cruise_speed * np.cos(other_ac.heading)
+                v_closing = ((v1_x - v2_x) * dx + (v1_y - v2_y) * dy) / (dist + 1e-6)
+                ttc = np.clip((dist / v_closing if v_closing > 0 else 50.0) / 50.0, 0, 1.0)
+                
+                rel_brg = ((np.arctan2(dx, dy) - headings[i] + np.pi) % (2 * np.pi)) - np.pi
+                rel_hdg = ((other_ac.heading - headings[i] + np.pi) % (2 * np.pi)) - np.pi
+                
+                neigh_feat.extend([np.clip(dist / 500.0, 0, 1.0), ttc, np.sin(rel_brg), np.cos(rel_brg), np.sin(rel_hdg), np.cos(rel_hdg)])
+            
+            obs_temp[i] = np.concatenate([self_feat, neigh_feat])
+
+        self._obs_buffer[:] = obs_temp.flatten()
+
+    def _calculate_collision_rewards(self, rewards_list):
+        n = len(self.aircraft_list)
+        i_idx, j_idx = np.triu_indices(n, k=1)
+        sep = self._dist_matrix[i_idx, j_idx]
+        
+        penalties = np.zeros_like(sep)
+        caution_mask = sep < self.caution_dist
+        penalties[caution_mask] += -5.0 * (1.0 - (sep[caution_mask] / self.caution_dist))
+
+        critical_mask = sep < self.critical_dist
+        penalties[critical_mask] += -50.0 * (1.0 - (sep[critical_mask] / self.critical_dist))**2
+
+        for i, j in zip(i_idx[critical_mask], j_idx[critical_mask]):
+            self.crit_dist_breakers.append((self.aircraft_list[i].id_tag, self.aircraft_list[j].id_tag))
+
+        np.add.at(rewards_list, i_idx, penalties)
+        np.add.at(rewards_list, j_idx, penalties)
+
+    def _check_line_segment_arrival_local(self, a, b, p, radius):
+        ap, ab = p - a, b - a
+        t = np.clip(np.dot(ap, ab) / (np.dot(ab, ab) + 1e-9), 0, 1)
+        return np.linalg.norm(p - (a + t * ab)) < radius
 
     def update_bounds(self, tl, br):
         self.min_lat, self.max_lat = sorted([tl[0], br[0]])
         self.min_lon, self.max_lon = sorted([tl[1], br[1]])
         self.transformer = CoordinateTransformer(self.min_lat, self.min_lon)
-        
-        lat_range, lon_range = \
-            self.max_lat - self.min_lat, self.max_lon - self.min_lon
-        self.wp_min_lat = self.min_lat + (lat_range * self.boundary_margin)
-        self.wp_max_lat = self.max_lat - (lat_range * self.boundary_margin)
-        self.wp_min_lon = self.min_lon + (lon_range * self.boundary_margin)
-        self.wp_max_lon = self.max_lon - (lon_range * self.boundary_margin)
+        l_r, n_r = self.max_lat - self.min_lat, self.max_lon - self.min_lon
+        self.wp_min_lat, self.wp_max_lat = \
+            self.min_lat + l_r*self.boundary_margin, \
+            self.max_lat - l_r*self.boundary_margin
+        self.wp_min_lon, self.wp_max_lon = \
+            self.min_lon + n_r*self.boundary_margin, \
+            self.max_lon - n_r*self.boundary_margin
 
     def _refill_mission(self, ac):
-        current_total = ac.waypoint_manager.queue_size() \
-                    + (1 if ac.waypoint_manager.current_waypoint else 0)
-        needed = self.mission_waypoint_count - current_total
+        wm = ac.waypoint_manager
+        needed = self.mission_waypoint_count - (wm.queue_size() + (1 if wm.current_waypoint else 0))
         for _ in range(max(0, int(needed))):
-            wp = Position(
-                np.random.uniform(self.wp_min_lat, self.wp_max_lat),
-                np.random.uniform(self.wp_min_lon, self.wp_max_lon)
-            )
-            ac.waypoint_manager.add_waypoint(wp)
+            wm.add_waypoint(
+                Position(
+                    np.random.uniform(self.wp_min_lat, self.wp_max_lat), 
+                    np.random.uniform(self.wp_min_lon, self.wp_max_lon)))
 
-    def _check_line_segment_arrival(self, p1_geo, p2_geo, wp_geo, radius):
-        # OPTIMIZATION: Avoid repeated tuple unpacking - pass pre-converted local coords
-        a = np.array(self.transformer.geo_to_local(p1_geo[0], p1_geo[1]))
-        b = np.array(self.transformer.geo_to_local(p2_geo[0], p2_geo[1]))
-        p = np.array(self.transformer.geo_to_local(wp_geo[0], wp_geo[1]))
-        
-        ap = p - a
-        ab = b - a
-        ab_dot = np.dot(ab, ab) + 1e-9
-        t = np.clip(np.dot(ap, ab) / ab_dot, 0, 1)
-        closest_point = a + t * ab
-        distance_to_segment = np.linalg.norm(p - closest_point)
-        return distance_to_segment < radius
-    
-    def _compute_local_distance(self, pos1_tuple, pos2_tuple):
-        """
-        OPTIMIZATION: Use local coordinate system for distance calculations.
-        Faster than geodesic for small distances (<1km).
-        """
-        p1 = self.transformer.geo_to_local(pos1_tuple[0], pos1_tuple[1])
-        p2 = self.transformer.geo_to_local(pos2_tuple[0], pos2_tuple[1])
-        return np.hypot(p2[0] - p1[0], p2[1] - p1[1])
+    def _sync_local_caches(self):
+        """Standardizes how we pull geo coordinates into our local meter-based matrices."""
+        n = len(self.aircraft_list)
+        lats = [ac.position.latitude for ac in self.aircraft_list]
+        lons = [ac.position.longitude for ac in self.aircraft_list]
+        x, y = self.transformer.geo_to_local(lats, lons)
+        self._local_pos_cache[:n, 0], self._local_pos_cache[:n, 1] = x, y
 
-    def _get_neighbor_obs(self, subject_idx, num_neighbors=2):
-        """OPTIMIZATION: Reduced geodesic calls, compute local distances once"""
-        subject_ac = self.aircraft_list[subject_idx]
-        
-        v1_x = subject_ac.dynamics.cruise_speed * np.sin(subject_ac.heading)
-        v1_y = subject_ac.dynamics.cruise_speed * np.cos(subject_ac.heading)
-        
-        # OPTIMIZATION: Pre-convert subject position to local once
-        subject_local = self.transformer.geo_to_local(
-            *subject_ac.position.to_tuple()
-        )
-        
-        # OPTIMIZATION: Build distance list without geodesic in loop
-        others = []
+        wp_indices, wp_lats, wp_lons = [], [], []
         for i, ac in enumerate(self.aircraft_list):
-            if i == subject_idx: 
-                continue
-            
-            # Use local distance computation (faster than geodesic for <1km)
-            other_local = self.transformer.geo_to_local(*ac.position.to_tuple())
-            dx = other_local[0] - subject_local[0]
-            dy = other_local[1] - subject_local[1]
-            dist = np.hypot(dx, dy)
-            
-            others.append((dist, ac, dx, dy))
-        
-        others.sort(key=lambda x: x[0])
-        
-        sensing_radius = 500.0
-        neighbor_features = []
-        
-        for i in range(num_neighbors):
-            if i < len(others):
-                dist, other_ac, dx, dy = others[i]
-                
-                v2_x = other_ac.dynamics.cruise_speed * np.sin(other_ac.heading)
-                v2_y = other_ac.dynamics.cruise_speed * np.cos(other_ac.heading)
-                
-                rvx, rvy = v1_x - v2_x, v1_y - v2_y
-                v_closing = (rvx * dx + rvy * dy) / (dist + 1e-6)
-                ttc = dist / v_closing if v_closing > 0 else 50.0 
-                
-                brg = np.arctan2(dy, dx)
-                rel_brg = wrap_angle(brg - subject_ac.heading)
-                rel_hdg = wrap_angle(other_ac.heading - subject_ac.heading)
-                
-                neighbor_features.extend([
-                    np.clip(dist / sensing_radius, 0, 1.0),
-                    np.clip(ttc / 50.0, 0, 1.0),
-                    np.sin(rel_brg), np.cos(rel_brg),
-                    np.sin(rel_hdg), np.cos(rel_hdg)
-                ])
-            else:
-                neighbor_features.extend([1.0, 1.0, 0.0, 0.0, 0.0, 0.0])
-        
-        return neighbor_features
-
-    def _get_uav_obs(self, idx):
-        if idx >= len(self.aircraft_list): 
-            return self._zero_obs  # OPTIMIZATION: Return pre-allocated zeros
-            
-        ac = self.aircraft_list[idx]
-        
-        wp = ac.waypoint_manager.current_waypoint
-        if wp:
-            # OPTIMIZATION: Use local distance instead of geodesic
-            dist_wp = self._compute_local_distance(
-                ac.position.to_tuple(), 
-                wp.to_tuple()
-            )
-            brg_wp = np.arctan2(
-                wp.longitude - ac.position.longitude, 
-                wp.latitude - ac.position.latitude
-            )
-            rel_brg_wp = wrap_angle(brg_wp - ac.heading)
-        else:
-            dist_wp, rel_brg_wp = 1000.0, 0.0
-        
-        # OPTIMIZATION: Pre-compute sin/cos for heading
-        sin_hdg, cos_hdg = np.sin(ac.heading), np.cos(ac.heading)
-        
-        nav_obs = [
-            np.clip(dist_wp / 1000.0, 0, 1.0), 
-            np.sin(rel_brg_wp), np.cos(rel_brg_wp),
-            sin_hdg, cos_hdg,
-            ac.dynamics.cruise_speed / 30.0,
-            1.0 if ac.waypoint_manager.has_waypoints() else 0.0,
-            0.0, 0.0, 0.0 
-        ]
-        
-        neighbor_obs = self._get_neighbor_obs(idx, num_neighbors=2)
-
-        return np.array(nav_obs + neighbor_obs, dtype=np.float32)
-    
-    def _calculate_collision_rewards(self, rewards_list):
-        """OPTIMIZATION: Use local distances instead of geodesic"""
-        for i1, i2 in combinations(range(len(self.aircraft_list)), 2):
-            ac1, ac2 = self.aircraft_list[i1], self.aircraft_list[i2]
-            
-            # Use local distance (faster than geodesic)
-            sep = self._compute_local_distance(
-                ac1.position.to_tuple(),
-                ac2.position.to_tuple()
-            )
-            
-            if sep < self.caution_dist:
-                # Severity 0.0 at caution_dist, 1.0 at 0m
-                severity = 1.0 - (sep / self.caution_dist)
-                penalty = -5.0 * severity
-                
-                if sep < self.critical_dist:
-                    # Quadratic spike only at very close range
-                    danger_severity = (1.0 - (sep / self.critical_dist)) ** 2
-                    penalty += -50.0 * danger_severity
-
-                    self.crit_dist_breakers.append((ac1.id, ac2.id))
-                
-                rewards_list[i1] += penalty
-                rewards_list[i2] += penalty
-        
-        return rewards_list
-    
-    def step(self, actions):
-        self.current_step += 1
-        uav_rewards = [0.0] * len(self.aircraft_list)
-
-        for i, ac in enumerate(self.aircraft_list):
-            # Handle loitering aircraft
-            if ac.flight_mode == FlightMode.LOITERING:
-                lx, ly = self.transformer.geo_to_local(
-                    ac.position.latitude, 
-                    ac.position.longitude
-                )
-                ac._update_loiter(lx, ly, self.dt, self.transformer)
-                continue
-
             wp = ac.waypoint_manager.current_waypoint
-            if not wp: 
-                continue
-
-            pos_prev = ac.position.to_tuple()
-            
-            # OPTIMIZATION: Use local distance instead of geodesic
-            dist_before = self._compute_local_distance(pos_prev, wp.to_tuple())
-            
-            # Physics Update
-            turn_rate = actions[i] * ac.dynamics.max_turn_rate
-            ac.update_simple(turn_rate, self.dt, self.transformer)
-            pos_curr = ac.position.to_tuple()
-
-            # Sequential Arrival Logic (Segment Check)
-            arrived = self._check_line_segment_arrival(
-                pos_prev, 
-                pos_curr, 
-                wp.to_tuple(), 
-                ac.waypoint_manager.arrival_threshold
-            )
-
-            # Reward Shaping
-            dist_after = self._compute_local_distance(pos_curr, wp.to_tuple())
-            hdg_to_wp = np.arctan2(
-                wp.longitude - pos_curr[1], 
-                wp.latitude - pos_curr[0]
-            )
-            hdg_err = abs(wrap_angle(hdg_to_wp - ac.heading))
-            
-            # Efficiency Rewards (Dense)
-            uav_rewards[i] = ((dist_before - dist_after) * 4.0) + (np.cos(hdg_err) * 2.0)
-            uav_rewards[i] -= 0.5 * (actions[i]**2)  # Smoothness
-            uav_rewards[i] -= 0.1  # Step penalty
-            
-            if arrived:
-                uav_rewards[i] += 3000.0  # High bonus for arrival
-                ac.waypoint_manager.advance()
-                if self.mode == 'gen_mission':
-                    self._refill_mission(ac)
-                ac.waypoint_manager.hit_waypoints.append(wp)
-
-            if not ac.waypoint_manager.has_waypoints():
-                ac._enter_loiter()
-
-            # Geofence Penalty
-            if not (self.min_lat < pos_curr[0] < self.max_lat) or \
-               not (self.min_lon < pos_curr[1] < self.max_lon):
-                uav_rewards[i] -= 50.0
-
-        if len(self.aircraft_list) > 1:
-            uav_rewards = self._calculate_collision_rewards(uav_rewards)
-
-        done = self.current_step >= self.max_steps or \
-               all(not ac.waypoint_manager.has_waypoints() for ac in self.aircraft_list)
-
-        # OPTIMIZATION: Use pre-allocated buffer and fill in-place
-        for j in range(self.max_uavs):
-            start_idx = j * self.obs_per_uav
-            end_idx = start_idx + self.obs_per_uav
-            self._obs_buffer[start_idx:end_idx] = self._get_uav_obs(j)
-
-        return self._obs_buffer.copy(), sum(uav_rewards), done, False, \
-            {"waypoints_hit": sum(len(ac.waypoint_manager.hit_waypoints) for ac in self.aircraft_list)}
+            if wp:
+                wp_indices.append(i); wp_lats.append(wp.latitude); wp_lons.append(wp.longitude)
+        
+        if wp_indices:
+            wx, wy = self.transformer.geo_to_local(wp_lats, wp_lons)
+            self._wp_local_cache[wp_indices, 0], self._wp_local_cache[wp_indices, 1] = wx, wy
 
     def reset(self, seed=None):
         super().reset(seed=seed)
@@ -309,18 +260,17 @@ class MultiUAVEnv(gym.Env):
             if self.mode == 'gen_mission':
                 ac.position = Position(
                     np.random.uniform(self.min_lat, self.max_lat), 
-                    np.random.uniform(self.min_lon, self.max_lon)
-                )
+                    np.random.uniform(self.min_lon, self.max_lon))
                 ac.heading = np.random.uniform(-np.pi, np.pi)
                 ac.waypoint_manager.waypoint_queue.clear()
                 ac.waypoint_manager.current_waypoint = None
                 self._refill_mission(ac)
             ac.waypoint_manager.hit_waypoints.clear()
-        
-        # OPTIMIZATION: Use pre-allocated buffer
-        for j in range(self.max_uavs):
-            start_idx = j * self.obs_per_uav
-            end_idx = start_idx + self.obs_per_uav
-            self._obs_buffer[start_idx:end_idx] = self._get_uav_obs(j)
+
+        # Batch update coordinate caches
+        self._sync_local_caches() # (See optional helper below)
+
+        # Replace the observation loop with the vectorized call:
+        self._update_obs_buffer() # <--- Updates everything at once
         
         return self._obs_buffer.copy(), {}

@@ -21,9 +21,13 @@ class CoordinateTransformer:
         self.to_xy = Transformer.from_crs(proj_geo, proj_local, always_xy=True)
         self.to_ll = Transformer.from_crs(proj_local, proj_geo, always_xy=True)
     
-    def geo_to_local(self, lat: float, lon: float) -> Tuple[float, float]:
-        """Convert geographic coordinates (lat, lon) to local coordinates (x, y) in meters"""
-        return self.to_xy.transform(lon, lat)
+    def geo_to_local(self, lats, lons) -> Tuple:
+        """
+        Convert geographic coordinates to local. 
+        Accepts floats, lists, or numpy arrays.
+        """
+        # pyproj transformer.transform() is highly optimized for sequences
+        return self.to_xy.transform(lons, lats)
     
     def local_to_geo(self, x: float, y: float) -> Tuple[float, float]:
         """Convert local coordinates (x, y) in meters to geographic coordinates (lat, lon)"""
