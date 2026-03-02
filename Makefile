@@ -16,4 +16,4 @@ test:
 	$(PYTHON) $(SRC)/deconfliction_factory.py --mode test
 
 test_light:
-	$(PYTHON) $(SRC)/deconfliction_factory.py --mode test
+	$(PYTHON) $(SRC)/deconfliction_factory.py --mode test_light

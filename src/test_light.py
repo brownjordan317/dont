@@ -34,7 +34,14 @@ def create_light_environment(config):
     tl = (origin[0] + lat_off, origin[1] - lon_off)
     br = (origin[0] - lat_off, origin[1] + lon_off)
 
-    return MultiUAVEnv(uavs, tl=tl, br=br, dt=0.05, mode=config["test"]["mode"])
+    return MultiUAVEnv(
+        uavs, 
+        tl=tl, 
+        br=br, 
+        dt=0.05, 
+        mode=config["test"]["mode"],
+        inference_mode=config["test"].get("inference_mode", False)
+    )
 
 def test(config):
     console.print(Panel.fit("[bold cyan]UAV Inference Engine (Light Mode)[/bold cyan]"))

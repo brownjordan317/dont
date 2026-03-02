@@ -21,7 +21,13 @@ console = Console()
 # ENV CREATION
 # ================================================================
 
-def create_test_environment(scenario, origin, config):
+def create_test_environment(scenario, origin, config, inference_mode=False):
+    """
+    Create test environment
+    
+    Args:
+        inference_mode: If True, skips reward calculations for faster inference
+    """
     box_size = scenario["box_size"]
     uavs = []
     for id, params in config["test"]["missions"].items():
@@ -47,7 +53,8 @@ def create_test_environment(scenario, origin, config):
         uavs, 
         tl=tl, br=br, 
         dt=0.05, 
-        mode=config["test"]["mode"]
+        mode=config["test"]["mode"],
+        inference_mode=inference_mode  # Enable inference mode
         ), tl, br
 
 # ================================================================
@@ -286,7 +293,8 @@ def test(config):
         "box_size": config["test"]["env"]["box_size"]
     }
     
-    env, tl, br = create_test_environment(scenario_info, origin, config)
+    # Enable inference mode for faster execution
+    env, tl, br = create_test_environment(scenario_info, origin, config, inference_mode=True)
     uav_data, _, total_reward, arrivals = run_and_record_episode(
         model, 
         env, 
