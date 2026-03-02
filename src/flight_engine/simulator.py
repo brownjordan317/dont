@@ -39,7 +39,12 @@ class FixedWingAircraft:
         # State tracking
         self.flight_mode = FlightMode.IDLE
         self.loiter_center: Optional[Position] = None
-        self.path_history: List[Position] = [Position(initial_position.latitude, initial_position.longitude)]
+        self.path_history: List[Position] = [
+            Position(
+                initial_position.latitude, 
+                initial_position.longitude
+            )
+        ]
         self.distance_traveled = 0.0
 
         # Add initial waypoints
@@ -60,57 +65,32 @@ class FixedWingAircraft:
                 wp = Position(*wp)
             self.add_wp(wp)
     
-    def update(self, dt: float):
-        """Update the aircraft state based on the current flight mode (Dubins path following)"""
-        # Create coordinate transformer centered on current position
-        transformer = CoordinateTransformer(
-            self.position.latitude, 
-            self.position.longitude
-        )
-        
-        # Current position in local coordinates (origin)
-        x, y = 0.0, 0.0
-        
-        # Check arrival if navigating
-        if self.flight_mode == FlightMode.NAVIGATING and self.waypoint_manager.current_waypoint:
-            dist_to_wp = self._calculate_dist(self.position, self.waypoint_manager.current_waypoint)
-            if dist_to_wp < self.waypoint_manager.arrival_threshold:
-                # if no more waypoints, enter loiter
-                if not self.waypoint_manager.advance():
-                    self.flight_mode = FlightMode.LOITERING
-                    self.loiter_center = Position(self.position.latitude, self.position.longitude)
-        
-        # Update based on mode
-        if self.flight_mode == FlightMode.LOITERING:
-            self._update_loiter(x, y, dt, transformer)
-        elif self.waypoint_manager.current_waypoint is not None:
-            self._update_navigation(x, y, dt, transformer)
+    def update_simple(self, turn_rate: float, dt: float, transformer: CoordinateTransformer):
+        # 1. Exact Arc Length (The "Odometer" distance)
+        arc_length = self.dynamics.cruise_speed * dt
+        self.distance_traveled += arc_length
+
+        # 2. Calculate Displacement
+        # If turn_rate is near zero, use the straight-line distance to avoid div by zero
+        if abs(turn_rate) < 1e-6:
+            dist_straight = arc_length
+            # Displacement uses current heading
+            dx = dist_straight * np.sin(self.heading)
+            dy = dist_straight * np.cos(self.heading)
         else:
-            # No waypoints - enter loiter
-            self._enter_loiter()
-    
-    def update_simple(self, turn_rate: float, dt: float, transformer: CoordinateTransformer) -> Tuple[float, float]:
-        """
-        Simple physics update used by gym_env for RL training.
-        Directly applies turn rate and moves forward.
-        
-        Args:
-            turn_rate: Turn rate in radians/second (positive = left)
-            dt: Time step in seconds
-            transformer: CoordinateTransformer for the environment
+            # The chord length is the straight line between start and end of the arc
+            dist_straight = (2 * self.dynamics.cruise_speed / abs(turn_rate)) * \
+                            np.sin(abs(turn_rate) * dt / 2.0)
             
-        Returns:
-            (dx, dy): Local displacement in meters
-        """
-        # Update heading
+            # The effective heading for the displacement is the average 
+            # of the start heading and the end heading
+            avg_heading = self.heading + (turn_rate * dt / 2.0)
+            dx = dist_straight * np.sin(avg_heading)
+            dy = dist_straight * np.cos(avg_heading)
+
+        # 3. Update the state
         self.heading = wrap_angle(self.heading + (turn_rate * dt))
         
-        # Calculate displacement
-        dist_moved = self.dynamics.cruise_speed * dt
-        dx = dist_moved * np.sin(self.heading)
-        dy = dist_moved * np.cos(self.heading)
-        
-        # Update position
         curr_x, curr_y = transformer.geo_to_local(
             self.position.latitude, 
             self.position.longitude
@@ -119,47 +99,6 @@ class FixedWingAircraft:
         self.position = Position(new_lat, new_lon)
         
         return dx, dy
-    
-    def _calculate_dist(self, pos1: Position, pos2: Position) -> float:
-        """Calculate Euclidean distance in meters between two geographic positions"""
-        transformer = CoordinateTransformer(pos1.latitude, pos1.longitude)
-        lx, ly = transformer.geo_to_local(pos2.latitude, pos2.longitude)
-        return np.hypot(lx, ly)
-    
-    def _update_navigation(self, x: float, y: float, dt: float, 
-                          transformer: CoordinateTransformer):
-        """Update aircraft state when navigating to waypoints (Dubins path following)"""
-        # Get target in local coordinates
-        wp = self.waypoint_manager.current_waypoint
-        xt, yt = transformer.geo_to_local(wp.latitude, wp.longitude)
-        
-        # Check arrival
-        distance = np.hypot(xt - x, yt - y)
-        if self.waypoint_manager.check_arrival(distance):
-            if not self.waypoint_manager.advance():
-                self._enter_loiter()
-                return
-            # Recalculate with new waypoint
-            wp = self.waypoint_manager.current_waypoint
-            xt, yt = transformer.geo_to_local(wp.latitude, wp.longitude)
-        
-        # Compute navigation
-        target_bearing = np.arctan2(yt - y, xt - x)
-        new_heading, turn_amount = self.dynamics.compute_turn(
-            self.heading, target_bearing, dt
-        )
-        
-        # Update position based on turn or straight
-        if abs(turn_amount) > 0.001:  # Turning
-            x, y = self.dynamics.compute_arc_motion(
-                x, y, self.heading, turn_amount)
-        else:  # Straight
-            travel_dist = min(self.dynamics.cruise_speed * dt, distance)
-            x, y = self.dynamics.compute_straight_motion(
-                x, y, new_heading, travel_dist)
-        
-        self.heading = new_heading
-        self._update_position(x, y, transformer)
     
     def _update_loiter(self, x: float, y: float, dt: float, 
                       transformer: CoordinateTransformer):
@@ -180,21 +119,3 @@ class FixedWingAircraft:
             self.position.longitude
         )
     
-    def _update_position(self, x: float, y: float, 
-                        transformer: CoordinateTransformer):
-        """Update the aircraft position and path history based on local coordinates"""
-        lat, lon = transformer.local_to_geo(x, y)
-        new_pos = Position(lat, lon)
-
-        if self.flight_mode == FlightMode.NAVIGATING:
-            # Convert previous geo position to local
-            prev_x, prev_y = transformer.geo_to_local(
-                self.position.latitude,
-                self.position.longitude
-            )
-            # Euclidean distance in meters
-            distance = np.hypot(x - prev_x, y - prev_y)
-            self.distance_traveled += distance
-        
-        self.position = new_pos
-        self.path_history.append(Position(lat, lon))

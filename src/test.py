@@ -23,13 +23,12 @@ console = Console()
 
 def create_test_environment(scenario, origin, config):
     box_size = scenario["box_size"]
-
     uavs = []
     for id, params in config["test"]["missions"].items():
         uav = FixedWingAircraft(
             id_tag=id,
             initial_position=Position(
-                params["initial_position"][0],
+                params["initial_position"][0], 
                 params["initial_position"][1]
             ),
             initial_heading=params["initial_heading"],
@@ -41,37 +40,25 @@ def create_test_environment(scenario, origin, config):
 
     lat_off = (box_size / 2.0) / 111_320.0
     lon_off = (box_size / 2.0) / (111_320.0 * np.cos(np.radians(origin[0])))
-
     tl = (origin[0] + lat_off, origin[1] - lon_off)
     br = (origin[0] - lat_off, origin[1] + lon_off)
 
-    env = MultiUAVEnv(
-        uavs,
-        tl=tl,
-        br=br,
-        dt=0.05,
+    return MultiUAVEnv(
+        uavs, 
+        tl=tl, br=br, 
+        dt=0.05, 
         mode=config["test"]["mode"]
-    )
-
-    return env, tl, br
+        ), tl, br
 
 # ================================================================
-# EPISODE RECORDING
+# EPISODE RECORDING (Optimized: Removed redundant checks)
 # ================================================================
 
 def run_and_record_episode(model, env, transformer, max_steps):
     obs, _ = env.reset()
-
-    uav_data = []
-    for ac in env.aircraft_list:
-        uav_data.append({
-            'id': ac.id_tag,
-            'positions': [],
-            'headings': [],
-            'waypoints_visited': [],
-            'all_waypoints': [],
-            'current_targets': []
-        })
+    uav_data = [{'id': ac.id_tag, 'positions': [], 'headings': [], 
+                 'waypoints_visited': [], 'all_waypoints': [], 
+                 'current_targets': []} for ac in env.aircraft_list]
 
     done = False
     step = 0
@@ -81,16 +68,14 @@ def run_and_record_episode(model, env, transformer, max_steps):
         for i, ac in enumerate(env.aircraft_list):
             pos = ac.position.to_tuple()
             x, y = transformer.geo_to_local(pos[0], pos[1])
-
             uav_data[i]['positions'].append((x, y))
             uav_data[i]['headings'].append(ac.heading)
 
-            if ac.waypoint_manager.current_waypoint:
-                wp = ac.waypoint_manager.current_waypoint.to_tuple()
+            wp_obj = ac.waypoint_manager.current_waypoint
+            if wp_obj:
+                wp = wp_obj.to_tuple()
                 wp_x, wp_y = transformer.geo_to_local(wp[0], wp[1])
-
                 uav_data[i]['current_targets'].append((wp_x, wp_y))
-
                 if (wp_x, wp_y) not in uav_data[i]['all_waypoints']:
                     uav_data[i]['all_waypoints'].append((wp_x, wp_y))
             else:
@@ -99,12 +84,10 @@ def run_and_record_episode(model, env, transformer, max_steps):
         action, _ = model.predict(obs, deterministic=True)
         obs, reward, done, _, info = env.step(action)
 
+        # Faster check for waypoint hits
         for i, ac in enumerate(env.aircraft_list):
-            if hasattr(ac, 'last_waypoint_hit_pos') and ac.last_waypoint_hit_pos:
-                h_x, h_y = transformer.geo_to_local(
-                    ac.last_waypoint_hit_pos[0],
-                    ac.last_waypoint_hit_pos[1]
-                )
+            if getattr(ac, 'last_waypoint_hit_pos', None):
+                h_x, h_y = transformer.geo_to_local(*ac.last_waypoint_hit_pos)
                 uav_data[i]['waypoints_visited'].append((h_x, h_y))
                 ac.last_waypoint_hit_pos = None
 
@@ -114,301 +97,211 @@ def run_and_record_episode(model, env, transformer, max_steps):
     return uav_data, step, total_reward, info["waypoints_hit"]
 
 # ================================================================
-# VIDEO WITH GLOW + FADE + SHAPE CHANGE
+# VIDEO GENERATION (Optimized with Blitting & Pre-calc)
 # ================================================================
 
-def create_video(uav_data, tl, br, transformer,
-                 scenario_name, _,
-                 arrivals, save_path, config,
-                 fps=30, speed_multiplier=1):
-
+def create_video(
+        uav_data, 
+        tl, br, 
+        transformer, 
+        scenario_name, _, 
+        arrivals, save_path, 
+        config, fps=30, speed_multiplier=1
+    ):
     console.print("[cyan]Creating video...[/cyan]")
-
     tl_x, tl_y = transformer.geo_to_local(tl[0], tl[1])
     br_x, br_y = transformer.geo_to_local(br[0], br[1])
 
     max_steps = max(len(data['positions']) for data in uav_data)
     frame_indices = list(range(0, max_steps, max(1, int(speed_multiplier))))
     total_frames = len(frame_indices)
-
     colors = plt.cm.tab10(np.linspace(0, 1, len(uav_data)))
+    
     fig, ax = plt.subplots(figsize=(10, 10), dpi=100)
-
-    # Geofence
-    ax.add_patch(Rectangle(
-        (tl_x, br_y),
-        br_x - tl_x,
-        tl_y - br_y,
-        linewidth=2,
-        edgecolor='red',
-        facecolor='none',
-        linestyle='--'
-    ))
-
+    ax.add_patch(
+        Rectangle(
+            (tl_x, br_y), 
+            br_x - tl_x, tl_y - br_y, 
+            linewidth=2, edgecolor='red', 
+            facecolor='none', linestyle='--'
+            )
+        )
+    
     uav_artists = []
+    trail_len = 120
+    # Pre-calculate alpha arrays for performance
+    alphas = np.linspace(0.02, 0.7, trail_len)
 
     for i, data in enumerate(uav_data):
         color = colors[i]
+        line, = ax.plot(
+            [], [], color=color, alpha=0.10, linewidth=1, animated=True
+        )
+        marker, = ax.plot(
+            [], [], marker='o', markersize=6, color=color, 
+            markeredgecolor='black', zorder=15, animated=True
+        )
+        trail = ax.scatter(
+            [], [], s=20, zorder=10, animated=True
+        )
+        
+        c30 = Circle(
+            (0, 0), config["test"]["caution_dist"], color=color, 
+            fill=False, linestyle='--', alpha=0.35, animated=True
+        )
+        c5 = Circle(
+            (0, 0), config["test"]["critical_dist"], color=color, 
+            fill=True, alpha=0.2, animated=True
+        )
+        glow = Circle(
+            (0, 0), 0, color=color, alpha=0.0, zorder=5, 
+            linewidth=0, animated=True
+        )
 
-        line, = ax.plot([], [], color=color, alpha=0.10, linewidth=1)
-        marker, = ax.plot([], [], marker='o', markersize=6,
-                          color=color, markeredgecolor='black', zorder=15)
+        # Using Quiver for arrows is much faster than recreating ax.arrow
+        quiver = ax.quiver(
+            [0], [0], [0], [0], color=color, scale=1, scale_units='xy', 
+            width=0.005, headwidth=4, zorder=20, animated=True
+        )
 
-        trail = ax.scatter([], [], s=20, zorder=10)
-
-        # Safety circles
-        c30 = Circle((0, 0), 
-                     config["test"]["caution_dist"], 
-                     color=color, fill=False,
-                     linestyle='--', alpha=0.35)
-        c5 = Circle((0, 0), 
-                    config["test"]["critical_dist"], 
-                    color=color, fill=True,
-                    alpha=0.2)
-
-        ax.add_patch(c30)
-        ax.add_patch(c5)
-
-        arrow = None
-
-        glow = Circle((0, 0),
-                      0,
-                      color=color,
-                      alpha=0.0,
-                      zorder=5,
-                      linewidth=0)
-
-        ax.add_patch(glow)
+        ax.add_patch(c30); ax.add_patch(c5); ax.add_patch(glow)
 
         uav_artists.append({
             'positions': np.array(data['positions']),
             'headings': np.array(data['headings']),
             'current_targets': data['current_targets'],
-            'line': line,
-            'marker': marker,
-            'trail': trail,
-            'c30': c30,
-            'c5': c5,
-            'arrow': arrow,
-            'glow': glow,
-            'color': color,
-            'last_target': None
+            'line': line, 'marker': marker, 'trail': trail,
+            'c30': c30, 'c5': c5, 'glow': glow, 'quiver': quiver,
+            'color_rgb': mcolors.to_rgb(color)
         })
 
     ax.set_xlim(tl_x - 100, br_x + 100)
     ax.set_ylim(br_y - 100, tl_y + 100)
     ax.set_aspect('equal')
-
-    title_text = ax.text(0.5, 1.05, '',
-                         transform=ax.transAxes,
-                         ha='center',
-                         fontweight='bold')
+    title_text = ax.text(
+        0.5, 1.05, '', transform=ax.transAxes, ha='center', 
+        fontweight='bold', animated=True
+    )
 
     def update(frame_num):
         step = frame_indices[frame_num]
-
         title_text.set_text(
             f"{scenario_name}\nStep: {step}/{max_steps} | Arrivals: {arrivals}"
         )
-
-        updated = [title_text]
+        changed_artists = [title_text]
 
         for art in uav_artists:
-
-            if step >= len(art['positions']):
-                continue
-
+            if step >= len(art['positions']): continue
             pos = art['positions'][step]
-
-            # Aircraft marker
+            
+            # Update Artists
             art['marker'].set_data([pos[0]], [pos[1]])
             art['line'].set_data(
-                art['positions'][:step+1, 0],
+                art['positions'][:step+1, 0], 
                 art['positions'][:step+1, 1]
             )
+            art['c30'].set_center(pos); art['c5'].set_center(pos)
 
-            # Safety circles
-            art['c30'].set_center(pos)
-            art['c5'].set_center(pos)
-
-            # ======================================================
-            # LONG FADING TRAIL (NO RESET)
-            # ======================================================
-
-            trail_len = 120
+            # Trail Logic (Optimized RGBA slicing)
             start_idx = max(0, step - trail_len)
             trail_pts = art['positions'][start_idx:step]
-
             if len(trail_pts) > 0:
                 art['trail'].set_offsets(trail_pts)
-
-                alphas = np.linspace(0.02, 0.7, len(trail_pts))
-                rgb = mcolors.to_rgb(art['color'])
                 rgba = np.zeros((len(trail_pts), 4))
-                rgba[:, :3] = rgb
-                rgba[:, 3] = alphas
+                rgba[:, :3] = art['color_rgb']
+                rgba[:, 3] = alphas[-len(trail_pts):] # Match alpha length to points
                 art['trail'].set_facecolors(rgba)
 
-            # ======================================================
-            # HEADING ARROW
-            # ======================================================
+            # Heading Arrow (Quiver update)
+            heading = art['headings'][step]
+            art['quiver'].set_offsets(pos)
+            art['quiver'].set_UVC(40 * np.sin(heading), 40 * np.cos(heading))
 
-            if art['arrow'] is not None:
-                art['arrow'].remove()
+            # Pulse Logic
+            target = art['current_targets'][step]
+            if target:
+                rad_base = config["test"]["wp_hit_radius"]
+                pulse = (rad_base * 0.7) + (rad_base * 0.3) * (0.5 * (1 + np.sin(frame_num * 0.05)))
+                art['glow'].set_center(target)
+                art['glow'].set_radius(pulse)
+                art['glow'].set_alpha(0.25 * (pulse / rad_base))
+            else:
+                art['glow'].set_alpha(0.0)
 
-            if step < len(art['headings']):
-                heading = art['headings'][step]
-
-                dx = 40 * np.sin(heading)
-                dy = 40 * np.cos(heading)
-
-                art['arrow'] = ax.arrow(
-                    pos[0], pos[1],
-                    dx, dy,
-                    head_width=12,
-                    head_length=15,
-                    linewidth=2,
-                    color=art['color'],
-                    zorder=20
-                )
-
-                updated.append(art['arrow'])
-
-            # ======================================================
-            # ACTIVE WAYPOINT PULSE (NO TRAIL RESET)
-            # ======================================================
-
-            max_glow_radius = int(config["test"]["wp_hit_radius"])
-            min_glow_radius = int(int(config["test"]["wp_hit_radius"]) * 0.7)
-            pulse_speed = 0.05
-
-            if step < len(art['current_targets']):
-                target = art['current_targets'][step]
-
-                if target is not None:
-
-                    art['last_target'] = target
-
-                    pulse = min_glow_radius + \
-                            (max_glow_radius - min_glow_radius) * \
-                            (0.5 * (1 + np.sin(frame_num * pulse_speed)))
-
-                    art['glow'].set_center(target)
-                    art['glow'].set_radius(pulse)
-
-                    alpha_scale = pulse / max_glow_radius
-                    art['glow'].set_alpha(0.25 * alpha_scale)
-
-                else:
-                    art['glow'].set_alpha(0.0)
-
-            updated.extend([
-                art['marker'],
-                art['line'],
-                art['trail'],
-                art['c30'],
-                art['c5'],
-                art['glow']
-            ])
-
-        return updated
+            changed_artists.extend(
+                [
+                    art['marker'], art['line'], 
+                    art['trail'], art['c30'], 
+                    art['c5'], art['glow'], 
+                    art['quiver']
+                    ]
+            )
+        
+        return changed_artists
 
     with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        TimeRemainingColumn(),
+        SpinnerColumn(), 
+        TextColumn("{task.description}"), 
+        BarColumn(), 
+        TimeRemainingColumn(), 
         console=console
     ) as progress:
-
-        task = progress.add_task(
-            "[cyan]Rendering video...", total=total_frames
-        )
-
+        
+        task = progress.add_task("[cyan]Rendering...", total=total_frames)
+        
+        # blit=True is the key to speed
         anim = FuncAnimation(
-            fig, update,
-            frames=total_frames,
-            interval=1000/fps,
-            blit=False
+            fig, update, frames=total_frames, 
+            interval=1000/fps, blit=True
         )
-
         writer = FFMpegWriter(fps=fps, bitrate=2000)
-
+        
+        # Hook into writer to update progress bar without slowing down render
         original_grab = writer.grab_frame
-
         def grab_with_progress(*args, **kwargs):
             original_grab(*args, **kwargs)
             progress.update(task, advance=1)
-
         writer.grab_frame = grab_with_progress
+        
         anim.save(save_path, writer=writer)
-
     plt.close()
 
-# ================================================================
-# TEST ENTRY
-# ================================================================
-
+# test() remains largely the same, but calls the optimized functions.
 def test(config):
-    console.print(Panel.fit("[bold white]Flight Path Visualizer[/bold white]"))
+    console.print(
+        Panel.fit("[bold white]Flight Path Visualizer[/bold white]")
+    )
     os.makedirs(config["test"]["save_dir"], exist_ok=True)
-
-    algo = config["test"].get("algorithm", "SAC").upper()
-    if algo == "SAC":
-        model_cls = SAC
-    elif algo == "A2C":
-        model_cls = A2C
-    elif algo == "PPO":
-        model_cls = PPO
-
+    
+    algo_map = {"SAC": SAC, "A2C": A2C, "PPO": PPO}
+    model_cls = algo_map.get(config["test"].get("algorithm", "SAC").upper(), SAC)
     model = model_cls.load(
         config["test"]["model_path"], 
         device=config["test"].get("device", "cpu")
     )
-    origin = [
-        float(config["test"]["env"]["origin"][0]),
-        float(config["test"]["env"]["origin"][1])
-    ]
-
+    
+    origin = [float(x) for x in config["test"]["env"]["origin"]]
     scenario_info = {
-        "name": config["test"]["test_name"],
+        "name": config["test"]["test_name"], 
         "box_size": config["test"]["env"]["box_size"]
     }
-
+    
     env, tl, br = create_test_environment(scenario_info, origin, config)
-
     uav_data, _, total_reward, arrivals = run_and_record_episode(
-        model, env, env.transformer,
+        model, 
+        env, 
+        env.transformer, 
         config["test"]["env"]["max_steps"]
     )
 
-    console.print("\n[bold green]Episode Finished[/bold green]")
-    console.print(f"Total Reward: {total_reward:.2f}")
-    console.print(f"Waypoint Arrivals: {arrivals}\n")
+    console.print(f"\n[bold green]Episode Finished[/bold green]\nTotal Reward: {total_reward:.2f}\nWaypoint Arrivals: {arrivals}\n")
 
     if config["test"].get("create_video", True):
         vid_name = f"{config['test']['test_name'].replace(' ', '_')}.mp4"
-        vid_path = os.path.join(config["test"]["save_dir"], vid_name)
-
         create_video(
-            uav_data,
-            tl,
-            br,
-            env.transformer,
-            config["test"]["test_name"],
-            total_reward,
-            arrivals,
-            vid_path,
-            config,
-            fps=config["test"].get("video_fps", 30),
+            uav_data, tl, br, env.transformer, config["test"]["test_name"], 0, arrivals, 
+            os.path.join(config["test"]["save_dir"], vid_name), config, 
+            fps=config["test"].get("video_fps", 30), 
             speed_multiplier=config["test"].get("video_speed", 1)
         )
-
     env.close()
-
-
-if __name__ == "__main__":
-    config_path = sys.argv[1] if len(sys.argv) > 1 else "config_test_2.yaml"
-    with open(config_path, 'r') as f:
-        config = yaml.safe_load(f)
-    test(config)

@@ -15,6 +15,7 @@ class MultiUAVEnv(gym.Env):
         self.mission_waypoint_count = mission_waypoint_count
         self.mode = mode
         self.caution_dist, self.critical_dist = caution_dist, critical_dist
+        self.caution_dist_breakers = []
         self.crit_dist_breakers = []
 
         self.update_bounds(tl, br)
@@ -138,24 +139,20 @@ class MultiUAVEnv(gym.Env):
 
     def _update_obs_buffer(self):
         n = len(self.aircraft_list)
-        # 1. Gather basic states
         headings = np.array([ac.heading for ac in self.aircraft_list], dtype=np.float32)
         speeds = np.array([ac.dynamics.cruise_speed for ac in self.aircraft_list], dtype=np.float32)
         has_wp = np.array([1.0 if ac.waypoint_manager.has_waypoints() else 0.0 for ac in self.aircraft_list], dtype=np.float32)
 
-        # 2. Vectorized Waypoint Navigation
         d_wp = self._wp_local_cache[:n] - self._local_pos_cache[:n]
         dist_wp = np.linalg.norm(d_wp, axis=1)
         brg_wp = np.arctan2(d_wp[:, 0], d_wp[:, 1])
-        rel_brg_wp = ((brg_wp - headings + np.pi) % (2 * np.pi)) - np.pi # Manual wrap_angle
+        rel_brg_wp = ((brg_wp - headings + np.pi) % (2 * np.pi)) - np.pi
 
-        # 3. Vectorized Neighbor Selection
         masked_dist = self._dist_matrix[:n, :n].copy()
         np.fill_diagonal(masked_dist, np.inf)
-        nearest_idx = np.argsort(masked_dist, axis=1)[:, :2]
         
-        # 4. Fill the buffer
         obs_temp = np.zeros((self.max_uavs, self.obs_per_uav), dtype=np.float32)
+        
         for i in range(n):
             # Self features (10 dims)
             self_feat = [
@@ -166,26 +163,35 @@ class MultiUAVEnv(gym.Env):
                 has_wp[i], 0.0, 0.0, 0.0
             ]
             
-            # Neighbor features (6 dims * 2 neighbors)
+            # Neighbor features (Must result in exactly 12 dims)
             neigh_feat = []
-            v1_x, v1_y = speeds[i] * np.sin(headings[i]), speeds[i] * np.cos(headings[i])
-            for nb_idx in nearest_idx[i]:
-                dist = masked_dist[i, nb_idx]
-                if dist == np.inf:
-                    neigh_feat.extend([1.0, 1.0, 0.0, 0.0, 0.0, 0.0])
-                    continue
-                
-                dx, dy = self._dx_matrix[i, nb_idx], self._dy_matrix[i, nb_idx]
-                other_ac = self.aircraft_list[nb_idx]
-                v2_x = other_ac.dynamics.cruise_speed * np.sin(other_ac.heading)
-                v2_y = other_ac.dynamics.cruise_speed * np.cos(other_ac.heading)
-                v_closing = ((v1_x - v2_x) * dx + (v1_y - v2_y) * dy) / (dist + 1e-6)
-                ttc = np.clip((dist / v_closing if v_closing > 0 else 50.0) / 50.0, 0, 1.0)
-                
-                rel_brg = ((np.arctan2(dx, dy) - headings[i] + np.pi) % (2 * np.pi)) - np.pi
-                rel_hdg = ((other_ac.heading - headings[i] + np.pi) % (2 * np.pi)) - np.pi
-                
-                neigh_feat.extend([np.clip(dist / 500.0, 0, 1.0), ttc, np.sin(rel_brg), np.cos(rel_brg), np.sin(rel_hdg), np.cos(rel_hdg)])
+            # Get indices of sorted neighbors
+            sorted_neighbors = np.argsort(masked_dist[i])
+            
+            # Force exactly 2 neighbor slots
+            for neighbor_slot in range(2):
+                # Check if a neighbor actually exists for this slot
+                if neighbor_slot < (n - 1):
+                    nb_idx = sorted_neighbors[neighbor_slot]
+                    dist = masked_dist[i, nb_idx]
+                    
+                    dx, dy = self._dx_matrix[i, nb_idx], self._dy_matrix[i, nb_idx]
+                    other_ac = self.aircraft_list[nb_idx]
+                    
+                    v1_x, v1_y = speeds[i] * np.sin(headings[i]), speeds[i] * np.cos(headings[i])
+                    v2_x = other_ac.dynamics.cruise_speed * np.sin(other_ac.heading)
+                    v2_y = other_ac.dynamics.cruise_speed * np.cos(other_ac.heading)
+                    
+                    v_closing = ((v1_x - v2_x) * dx + (v1_y - v2_y) * dy) / (dist + 1e-6)
+                    ttc = np.clip((dist / v_closing if v_closing > 0 else 50.0) / 50.0, 0, 1.0)
+                    
+                    rel_brg = ((np.arctan2(dx, dy) - headings[i] + np.pi) % (2 * np.pi)) - np.pi
+                    rel_hdg = ((other_ac.heading - headings[i] + np.pi) % (2 * np.pi)) - np.pi
+                    
+                    neigh_feat.extend([np.clip(dist / 500.0, 0, 1.0), ttc, np.sin(rel_brg), np.cos(rel_brg), np.sin(rel_hdg), np.cos(rel_hdg)])
+                else:
+                    # Pad with "no neighbor" values (e.g., max distance, zero bearing)
+                    neigh_feat.extend([1.0, 1.0, 0.0, 1.0, 0.0, 1.0])
             
             obs_temp[i] = np.concatenate([self_feat, neigh_feat])
 
@@ -202,6 +208,9 @@ class MultiUAVEnv(gym.Env):
 
         critical_mask = sep < self.critical_dist
         penalties[critical_mask] += -50.0 * (1.0 - (sep[critical_mask] / self.critical_dist))**2
+
+        for i, j in zip(i_idx[caution_mask], j_idx[caution_mask]):
+            self.caution_dist_breakers.append((self.aircraft_list[i].id_tag, self.aircraft_list[j].id_tag))
 
         for i, j in zip(i_idx[critical_mask], j_idx[critical_mask]):
             self.crit_dist_breakers.append((self.aircraft_list[i].id_tag, self.aircraft_list[j].id_tag))
@@ -261,6 +270,14 @@ class MultiUAVEnv(gym.Env):
                 ac.position = Position(
                     np.random.uniform(self.min_lat, self.max_lat), 
                     np.random.uniform(self.min_lon, self.max_lon))
+                ac.turning_radius = np.random.uniform(
+                    ac.turning_radius - ac.turning_variance, 
+                    ac.turning_radius + ac.turning_variance
+                )
+                ac.dynamics.cruise_speed = np.random.uniform(
+                    ac.dynamics.cruise_speed - ac.speed_variance, 
+                    ac.dynamics.cruise_speed + ac.speed_variance
+                )
                 ac.heading = np.random.uniform(-np.pi, np.pi)
                 ac.waypoint_manager.waypoint_queue.clear()
                 ac.waypoint_manager.current_waypoint = None
@@ -274,3 +291,42 @@ class MultiUAVEnv(gym.Env):
         self._update_obs_buffer() # <--- Updates everything at once
         
         return self._obs_buffer.copy(), {}
+    
+    def get_uav_metrics(self):
+        """
+        Returns comprehensive telemetry and mission progress for all UAVs.
+        """
+        metrics = {
+            "telemetry": [],
+            "mission_stats": [],
+            "safety_violations": {
+                "caution": {
+                    "total_count": len(self.caution_dist_breakers),
+                    "pairs": self.caution_dist_breakers
+                },
+                "critical": {
+                    "total_count": len(self.crit_dist_breakers),
+                    "pairs": self.crit_dist_breakers
+                }
+            }
+        }
+
+        for ac in self.aircraft_list:
+            # 1. Position and Heading
+            metrics["telemetry"].append({
+                "id": ac.id_tag,
+                "pos": (ac.position.latitude, ac.position.longitude),
+                "heading": ac.heading,
+                "mode": ac.flight_mode
+            })
+
+            # 2. Waypoints and Distance
+            # Note: This assumes your aircraft objects have a 'distance_traveled' 
+            # attribute. If not, you can track this in the step() function.
+            metrics["mission_stats"].append({
+                "id": ac.id_tag,
+                "waypoints_reached": len(ac.waypoint_manager.hit_waypoints),
+                "dist_navigating": ac.distance_traveled
+            })
+
+        return metrics

@@ -4,9 +4,9 @@ train:
   # ------------------------------------------
   # Stable Baselines3 hyperparameters
   # ------------------------------------------
-  algorithm: "PPO"                    # SAC | PPO | A2C
-  model_name: "ppo_uav_curriculum"    # Used for tensorboard log name and final save filename
-  save_dir: "./models_ppo/"
+  algorithm: "A2C"                    # SAC | PPO | A2C
+  model_name: "a2c_uav_curriculum"    # Used for tensorboard log name and final save filename
+  save_dir: "./models_a2c/"
   tensorboard_log: "./training_logs/"
   verbose: 0
   device: "cpu" # use the cpu for PPO and A2C, and the GPU (cuda) for SAC
@@ -56,8 +56,8 @@ train:
   # ------------------------------------------
   # Curriculum
   # ------------------------------------------
-  total_timesteps: 1_000_000 # The total number of timesteps to train for
-  change_frequency: 15_000 # The number of timesteps to wait before changing the environment
+  total_timesteps: 10_000_000 # The total number of timesteps to train for
+  change_frequency: 25_000 # The number of timesteps to wait before changing the environment
   curriculum: # The curriculum for training the agent
     # must start at 0.00
     0.00: # Percentage into training when this environment should be used

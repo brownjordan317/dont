@@ -73,9 +73,6 @@ pip install -r requirements.txt
 - **`wp_manager.py`**: Waypoint queue and arrival logic
 - **`visualizer.py`**: Matplotlib plotting for multi-UAV scenarios
 
-### Utilities
-- **`just_fly_a_path.py`**: Standalone physics test (no RL, just simulation)
-
 ---
 
 ## 🚀 Quick Start Guide
