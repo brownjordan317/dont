@@ -19,6 +19,10 @@ class DeconflictionAutoPilotFactory:
             console.print(Panel.fit("[bold blue]Starting Testing Mode[/bold blue]"))
             from test import test
             self.run = test
+        elif mode == 'test':
+            console.print(Panel.fit("[bold blue]Starting Light Testing Mode[/bold blue]"))
+            from test_light import test
+            self.run = test
 
     
     def read_config(self, config_path):
