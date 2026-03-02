@@ -90,6 +90,7 @@ class MultiUAVEnv(gym.Env):
         for i, ac in enumerate(self.aircraft_list):
             if ac.flight_mode == FlightMode.LOITERING:
                 ac._update_loiter(*self._prev_local_cache[i], self.dt, self.transformer)
+                # Don't track distance while loitering
             else:
                 ac.update_simple(actions[i] * ac.dynamics.max_turn_rate, self.dt, self.transformer)
 
@@ -296,6 +297,9 @@ class MultiUAVEnv(gym.Env):
         super().reset(seed=seed)
         self.current_step = 0
         for ac in self.aircraft_list:
+            # Reset distance tracking
+            ac.distance_traveled = 0.0
+            
             if self.mode == 'gen_mission':
                 ac.position = Position(
                     np.random.uniform(self.min_lat, self.max_lat), 

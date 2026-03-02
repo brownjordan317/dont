@@ -6,7 +6,7 @@ from matplotlib.animation import FuncAnimation, FFMpegWriter
 from stable_baselines3 import A2C, PPO, SAC
 from rich.console import Console
 from rich.panel import Panel
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeRemainingColumn
+from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeRemainingColumn, TimeElapsedColumn
 import os
 import yaml
 import sys
@@ -21,7 +21,7 @@ console = Console()
 # ENV CREATION
 # ================================================================
 
-def create_test_environment(scenario, origin, config, inference_mode=False):
+def create_test_environment(scenario, origin, config, inference_mode=True):
     """
     Create test environment
     
@@ -58,7 +58,7 @@ def create_test_environment(scenario, origin, config, inference_mode=False):
         ), tl, br
 
 # ================================================================
-# EPISODE RECORDING (Optimized: Removed redundant checks)
+# EPISODE RECORDING (for video generation)
 # ================================================================
 
 def run_and_record_episode(model, env, transformer, max_steps):
@@ -102,6 +102,41 @@ def run_and_record_episode(model, env, transformer, max_steps):
         step += 1
 
     return uav_data, step, total_reward, info["waypoints_hit"]
+
+# ================================================================
+# LIGHT MODE (no video, just statistics)
+# ================================================================
+
+def run_light_episode(model, env, max_steps):
+    """Run episode without recording positions - just get metrics"""
+    obs, _ = env.reset()
+    
+    total_reward = 0
+    step_count = 0
+    done = False
+    info = {"waypoints_hit": 0}
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+        TimeElapsedColumn(),
+        console=console
+    ) as progress:
+        
+        task = progress.add_task("[yellow]Simulating...", total=max_steps)
+
+        while not done and step_count < max_steps:
+            action, _ = model.predict(obs, deterministic=True)
+            obs, reward, done, _, info = env.step(action)
+            
+            total_reward += reward
+            step_count += 1
+            
+            progress.update(task, advance=1)
+    
+    return step_count, total_reward, info.get('waypoints_hit', 0), done
 
 # ================================================================
 # VIDEO GENERATION (Optimized with Blitting & Pre-calc)
@@ -273,13 +308,22 @@ def create_video(
         anim.save(save_path, writer=writer)
     plt.close()
 
-# test() remains largely the same, but calls the optimized functions.
+# ================================================================
+# MAIN TEST FUNCTION
+# ================================================================
+
 def test(config):
-    console.print(
-        Panel.fit("[bold white]Flight Path Visualizer[/bold white]")
-    )
+    # Determine mode (light or full video)
+    light_mode = not config["test"].get("save_visuals", False)
+    
+    if light_mode:
+        console.print(Panel.fit("[bold cyan]UAV Inference Engine (Light Mode)[/bold cyan]"))
+    else:
+        console.print(Panel.fit("[bold white]Flight Path Visualizer[/bold white]"))
+    
     os.makedirs(config["test"]["save_dir"], exist_ok=True)
     
+    # Load model
     algo_map = {"SAC": SAC, "A2C": A2C, "PPO": PPO}
     model_cls = algo_map.get(config["test"].get("algorithm", "SAC").upper(), SAC)
     model = model_cls.load(
@@ -293,23 +337,65 @@ def test(config):
         "box_size": config["test"]["env"]["box_size"]
     }
     
-    # Enable inference mode for faster execution
+    # Create environment with inference mode enabled
     env, tl, br = create_test_environment(scenario_info, origin, config, inference_mode=True)
-    uav_data, _, total_reward, arrivals = run_and_record_episode(
-        model, 
-        env, 
-        env.transformer, 
-        config["test"]["env"]["max_steps"]
-    )
-
-    console.print(f"\n[bold green]Episode Finished[/bold green]\nTotal Reward: {total_reward:.2f}\nWaypoint Arrivals: {arrivals}\n")
-
-    if config["test"].get("create_video", True):
-        vid_name = f"{config['test']['test_name'].replace(' ', '_')}.mp4"
-        create_video(
-            uav_data, tl, br, env.transformer, config["test"]["test_name"], 0, arrivals, 
-            os.path.join(config["test"]["save_dir"], vid_name), config, 
-            fps=config["test"].get("video_fps", 30), 
-            speed_multiplier=config["test"].get("video_speed", 1)
+    max_steps = config["test"]["env"]["max_steps"]
+    
+    if light_mode:
+        # Light mode - just run and get stats
+        steps, total_reward, arrivals, done = run_light_episode(model, env, max_steps)
+        
+        # Get safety metrics and per-UAV stats
+        metrics = env.get_uav_metrics()
+        
+        # Display results
+        console.print("\n" + "="*50)
+        console.print(f"[bold green]Episode Results:[/bold green]")
+        console.print(f" • Total Reward: [bold white]{total_reward:.2f}[/bold white]")
+        console.print(f" • Waypoints Hit: [bold cyan]{arrivals}[/bold cyan]")
+        console.print(f" • Steps: [bold yellow]{steps}[/bold yellow]")
+        console.print(f" • Status: [bold]{'Completed' if done else 'Timed Out'}[/bold]")
+        console.print(f" • Caution Violations: [yellow]{metrics['safety_violations']['caution']['total_count']}[/yellow]")
+        console.print(f" • Critical Violations: [red]{metrics['safety_violations']['critical']['total_count']}[/red]")
+        
+        # Per-UAV distance stats
+        console.print(f"\n[bold cyan]Distance Traveled per UAV:[/bold cyan]")
+        for stat in metrics['mission_stats']:
+            dist_m = stat['dist_navigating']
+            console.print(f" • {stat['id']}: [green]{dist_m:.2f} m[/green] ({stat['waypoints_reached']} waypoints)")
+        
+        console.print("="*50 + "\n")
+        
+    else:
+        # Full mode - record positions and create video
+        uav_data, steps, total_reward, arrivals = run_and_record_episode(
+            model, env, env.transformer, max_steps
         )
+        
+        # Get safety metrics
+        metrics = env.get_uav_metrics()
+        
+        console.print(f"\n[bold green]Episode Finished[/bold green]")
+        console.print(f"Total Reward: {total_reward:.2f}")
+        console.print(f"Waypoint Arrivals: {arrivals}")
+        console.print(f"Steps: {steps}")
+        console.print(f"Caution Violations: {metrics['safety_violations']['caution']['total_count']}")
+        console.print(f"Critical Violations: {metrics['safety_violations']['critical']['total_count']}")
+        
+        # Per-UAV distance stats
+        console.print(f"\n[bold cyan]Distance Traveled:[/bold cyan]")
+        for stat in metrics['mission_stats']:
+            dist_km = stat['dist_navigating'] / 1000.0
+            console.print(f" • {stat['id']}: {dist_km:.2f} km ({stat['waypoints_reached']} waypoints)")
+        console.print()
+        
+        if config["test"].get("create_video", True):
+            vid_name = f"{config['test']['test_name'].replace(' ', '_')}.mp4"
+            create_video(
+                uav_data, tl, br, env.transformer, config["test"]["test_name"], 0, arrivals, 
+                os.path.join(config["test"]["save_dir"], vid_name), config, 
+                fps=config["test"].get("video_fps", 30), 
+                speed_multiplier=config["test"].get("video_speed", 1)
+            )
+    
     env.close()
