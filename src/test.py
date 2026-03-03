@@ -8,8 +8,6 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeRemainingColumn, TimeElapsedColumn
 import os
-import yaml
-import sys
 
 from gym_env import MultiUAVEnv
 from flight_engine.simulator import FixedWingAircraft
@@ -338,7 +336,12 @@ def test(config):
     }
     
     # Create environment with inference mode enabled
-    env, tl, br = create_test_environment(scenario_info, origin, config, inference_mode=True)
+    env, tl, br = create_test_environment(
+        scenario_info, 
+        origin, 
+        config, 
+        inference_mode=config["test"]["inference_mode"]
+    )
     max_steps = config["test"]["env"]["max_steps"]
     
     if light_mode:

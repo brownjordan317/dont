@@ -4,12 +4,12 @@ train:
   # ------------------------------------------
   # Stable Baselines3 hyperparameters
   # ------------------------------------------
-  algorithm: "A2C"                    # SAC | PPO | A2C
-  model_name: "a2c_uav_curriculum"    # Used for tensorboard log name and final save filename
-  save_dir: "./models_a2c/"
+  algorithm: "SAC"                    # SAC | PPO | A2C
+  model_name: "SAC_uav_curriculum"    # Used for tensorboard log name and final save filename
+  save_dir: "./models_sac/"
   tensorboard_log: "./training_logs/"
   verbose: 0
-  device: "cpu" # use the cpu for PPO and A2C, and the GPU (cuda) for SAC
+  device: "cuda" # use the cpu for PPO and A2C, and the GPU (cuda) for SAC
 
   # SAC hyperparameters (ignored for PPO/A2C)
   buffer_size: 1_000_000

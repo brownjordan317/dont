@@ -1,13 +1,25 @@
 import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
-from flight_engine.helpers import wrap_angle, Position, FlightMode
+from flight_engine.helpers import Position, FlightMode
 from flight_engine.trans_coorders import CoordinateTransformer
 
 class MultiUAVEnv(gym.Env):
-    def __init__(self, aircraft_list, tl, br, dt=0.3, max_steps=10_000, boundary_margin=0.15, 
-                 mission_waypoint_count=3, mode='gen_mission', caution_dist=30.0, critical_dist=3.0,
-                 inference_mode=False):
+    def __init__(
+        self, 
+        aircraft_list, 
+        tl, 
+        br, 
+        dt=0.3, 
+        max_steps=10_000, 
+        boundary_margin=0.15, 
+        mission_waypoint_count=3,
+        mode='gen_mission', 
+        caution_dist=30.0, 
+        critical_dist=3.0,
+        inference_mode=False
+        ):
+
         super().__init__()
         self.aircraft_list = aircraft_list
         self.max_uavs = 5
@@ -57,7 +69,7 @@ class MultiUAVEnv(gym.Env):
         else:
             rewards = np.zeros(n)
 
-        # 1. Batch Transformation: Pre-move state & Waypoints (needed for both modes)
+        # 1. Batch Transformation: Pre-move state & Waypoints
         lats = [ac.position.latitude for ac in self.aircraft_list]
         lons = [ac.position.longitude for ac in self.aircraft_list]
         
@@ -89,10 +101,17 @@ class MultiUAVEnv(gym.Env):
         # 2. Physics update
         for i, ac in enumerate(self.aircraft_list):
             if ac.flight_mode == FlightMode.LOITERING:
-                ac._update_loiter(*self._prev_local_cache[i], self.dt, self.transformer)
+                ac._update_loiter(
+                    *self._prev_local_cache[i], 
+                    self.dt, self.transformer
+                )
                 # Don't track distance while loitering
             else:
-                ac.update_simple(actions[i] * ac.dynamics.max_turn_rate, self.dt, self.transformer)
+                ac.update_simple(
+                    actions[i] * ac.dynamics.max_turn_rate, 
+                    self.dt, 
+                    self.transformer
+                )
 
         # 3. Batch Transformation: Post-move state
         lats_post = [ac.position.latitude for ac in self.aircraft_list]
@@ -103,9 +122,14 @@ class MultiUAVEnv(gym.Env):
 
         # 4. Collision Detection (always calculate for metrics, only penalize in training mode)
         if n > 1:
-            self._dx_matrix[:n, :n] = self._local_pos_cache[:n, None, 0] - self._local_pos_cache[None, :n, 0]
-            self._dy_matrix[:n, :n] = self._local_pos_cache[:n, None, 1] - self._local_pos_cache[None, :n, 1]
-            self._dist_matrix[:n, :n] = np.hypot(self._dx_matrix[:n, :n], self._dy_matrix[:n, :n])
+            self._dx_matrix[:n, :n] =     self._local_pos_cache[:n, None, 0] \
+                                        - self._local_pos_cache[None, :n, 0]
+            self._dy_matrix[:n, :n] =     self._local_pos_cache[:n, None, 1] \
+                                        - self._local_pos_cache[None, :n, 1]
+            self._dist_matrix[:n, :n] = np.hypot(
+                self._dx_matrix[:n, :n], 
+                self._dy_matrix[:n, :n]
+            )
             
             # Track violations for metrics (always)
             self._track_collision_violations()
@@ -116,15 +140,22 @@ class MultiUAVEnv(gym.Env):
 
         # 5. Nav Rewards & Waypoint Management
         if not self.inference_mode:
-            dist_after = np.linalg.norm(self._wp_local_cache[:n] - self._local_pos_cache[:n], axis=1)
+            dist_after = np.linalg.norm(
+                self._wp_local_cache[:n] - self._local_pos_cache[:n], 
+                axis=1
+            )
         
         for i, ac in enumerate(self.aircraft_list):
             # Heading error logic (only needed for rewards)
             if not self.inference_mode:
-                dx_wp = self._wp_local_cache[i, 0] - self._local_pos_cache[i, 0]
-                dy_wp = self._wp_local_cache[i, 1] - self._local_pos_cache[i, 1]
+                dx_wp =     self._wp_local_cache[i, 0] \
+                          - self._local_pos_cache[i, 0]
+                dy_wp =     self._wp_local_cache[i, 1] \
+                          - self._local_pos_cache[i, 1]
                 hdg_to_wp = np.arctan2(dx_wp, dy_wp)
-                hdg_err = np.abs((hdg_to_wp - ac.heading + np.pi) % (2 * np.pi) - np.pi)
+                hdg_err = np.abs(
+                    (hdg_to_wp - ac.heading + np.pi) % (2 * np.pi) - np.pi
+                )
 
                 rewards[i] += (dist_before[i] - dist_after[i]) * 4.0
                 rewards[i] += np.cos(hdg_err) * 2.0
@@ -152,17 +183,42 @@ class MultiUAVEnv(gym.Env):
 
         self._update_obs_buffer() 
 
-        done = self.current_step >= self.max_steps or all(not ac.waypoint_manager.has_waypoints() for ac in self.aircraft_list)
+        done = self.current_step >= self.max_steps or \
+            all(
+                not ac.waypoint_manager.has_waypoints() for \
+                    ac in self.aircraft_list
+            )
         
-        total_reward = float(rewards.sum()) if not self.inference_mode else 0.0
+        total_reward = float(rewards.sum()) if \
+            not self.inference_mode else 0.0
         
-        return self._obs_buffer.copy(), total_reward, done, False, {"waypoints_hit": sum(len(ac.waypoint_manager.hit_waypoints) for ac in self.aircraft_list)}
+        return \
+            self._obs_buffer.copy(), \
+            total_reward, \
+            done, \
+            False, \
+            {
+                "waypoints_hit": sum(
+                    len(ac.waypoint_manager.hit_waypoints) for \
+                        ac in self.aircraft_list
+                    )
+            }
 
     def _update_obs_buffer(self):
         n = len(self.aircraft_list)
-        headings = np.array([ac.heading for ac in self.aircraft_list], dtype=np.float32)
-        speeds = np.array([ac.dynamics.cruise_speed for ac in self.aircraft_list], dtype=np.float32)
-        has_wp = np.array([1.0 if ac.waypoint_manager.has_waypoints() else 0.0 for ac in self.aircraft_list], dtype=np.float32)
+        headings = np.array(
+            [ac.heading for ac in self.aircraft_list], 
+            dtype=np.float32
+        )
+        speeds = np.array(
+            [ac.dynamics.cruise_speed for ac in self.aircraft_list], 
+            dtype=np.float32
+        )
+        has_wp = np.array(
+            [1.0 if ac.waypoint_manager.has_waypoints() else \
+                0.0 for ac in self.aircraft_list], 
+            dtype=np.float32
+        )
 
         d_wp = self._wp_local_cache[:n] - self._local_pos_cache[:n]
         dist_wp = np.linalg.norm(d_wp, axis=1)
@@ -172,7 +228,10 @@ class MultiUAVEnv(gym.Env):
         masked_dist = self._dist_matrix[:n, :n].copy()
         np.fill_diagonal(masked_dist, np.inf)
         
-        obs_temp = np.zeros((self.max_uavs, self.obs_per_uav), dtype=np.float32)
+        obs_temp = np.zeros(
+            (self.max_uavs, self.obs_per_uav), 
+            dtype=np.float32
+        )
         
         for i in range(n):
             # Self features (10 dims)
@@ -196,22 +255,36 @@ class MultiUAVEnv(gym.Env):
                     nb_idx = sorted_neighbors[neighbor_slot]
                     dist = masked_dist[i, nb_idx]
                     
-                    dx, dy = self._dx_matrix[i, nb_idx], self._dy_matrix[i, nb_idx]
+                    dx = self._dx_matrix[i, nb_idx]
+                    dy = self._dy_matrix[i, nb_idx]
                     other_ac = self.aircraft_list[nb_idx]
                     
-                    v1_x, v1_y = speeds[i] * np.sin(headings[i]), speeds[i] * np.cos(headings[i])
+                    v1_x = speeds[i] * np.sin(headings[i])
+                    v1_y = speeds[i] * np.cos(headings[i])
                     v2_x = other_ac.dynamics.cruise_speed * np.sin(other_ac.heading)
                     v2_y = other_ac.dynamics.cruise_speed * np.cos(other_ac.heading)
                     
                     v_closing = ((v1_x - v2_x) * dx + (v1_y - v2_y) * dy) / (dist + 1e-6)
-                    ttc = np.clip((dist / v_closing if v_closing > 0 else 50.0) / 50.0, 0, 1.0)
+                    ttc = np.clip(
+                        (dist / v_closing if v_closing > 0 else 50.0) / 50.0, 
+                        0, 
+                        1.0
+                    )
                     
                     rel_brg = ((np.arctan2(dx, dy) - headings[i] + np.pi) % (2 * np.pi)) - np.pi
                     rel_hdg = ((other_ac.heading - headings[i] + np.pi) % (2 * np.pi)) - np.pi
                     
-                    neigh_feat.extend([np.clip(dist / 500.0, 0, 1.0), ttc, np.sin(rel_brg), np.cos(rel_brg), np.sin(rel_hdg), np.cos(rel_hdg)])
+                    neigh_feat.extend(
+                        [
+                            np.clip(dist / 500.0, 0, 1.0), 
+                            ttc, np.sin(rel_brg), 
+                            np.cos(rel_brg), 
+                            np.sin(rel_hdg), 
+                            np.cos(rel_hdg)
+                        ]
+                    )
                 else:
-                    # Pad with "no neighbor" values (e.g., max distance, zero bearing)
+                    # Pad with "no neighbor" values
                     neigh_feat.extend([1.0, 1.0, 0.0, 1.0, 0.0, 1.0])
             
             obs_temp[i] = np.concatenate([self_feat, neigh_feat])
@@ -228,10 +301,14 @@ class MultiUAVEnv(gym.Env):
         critical_mask = sep < self.critical_dist
 
         for i, j in zip(i_idx[caution_mask], j_idx[caution_mask]):
-            self.caution_dist_breakers.append((self.aircraft_list[i].id_tag, self.aircraft_list[j].id_tag))
+            self.caution_dist_breakers.append(
+                (self.aircraft_list[i].id_tag, self.aircraft_list[j].id_tag)
+            )
 
         for i, j in zip(i_idx[critical_mask], j_idx[critical_mask]):
-            self.crit_dist_breakers.append((self.aircraft_list[i].id_tag, self.aircraft_list[j].id_tag))
+            self.crit_dist_breakers.append(
+                (self.aircraft_list[i].id_tag, self.aircraft_list[j].id_tag)
+            )
 
     def _calculate_collision_rewards(self, rewards_list):
         """Calculate collision penalties (only in training mode)"""
@@ -268,7 +345,8 @@ class MultiUAVEnv(gym.Env):
 
     def _refill_mission(self, ac):
         wm = ac.waypoint_manager
-        needed = self.mission_waypoint_count - (wm.queue_size() + (1 if wm.current_waypoint else 0))
+        needed =     self.mission_waypoint_count \
+                   - (wm.queue_size() + (1 if wm.current_waypoint else 0))
         for _ in range(max(0, int(needed))):
             wm.add_waypoint(
                 Position(
@@ -287,11 +365,14 @@ class MultiUAVEnv(gym.Env):
         for i, ac in enumerate(self.aircraft_list):
             wp = ac.waypoint_manager.current_waypoint
             if wp:
-                wp_indices.append(i); wp_lats.append(wp.latitude); wp_lons.append(wp.longitude)
+                wp_indices.append(i)
+                wp_lats.append(wp.latitude)
+                wp_lons.append(wp.longitude)
         
         if wp_indices:
             wx, wy = self.transformer.geo_to_local(wp_lats, wp_lons)
-            self._wp_local_cache[wp_indices, 0], self._wp_local_cache[wp_indices, 1] = wx, wy
+            self._wp_local_cache[wp_indices, 0] = wx
+            self._wp_local_cache[wp_indices, 1] = wy
 
     def reset(self, seed=None):
         super().reset(seed=seed)
