@@ -290,7 +290,7 @@ def train(config):
 
     console.print(
         Panel.fit(
-            "[bold white]Multi-UAV A2C Trainer[/bold white]",
+            f"[bold white]Multi-UAV {config['train']['algorithm']} Trainer[/bold white]",
             subtitle="Percent-Based Curriculum Learning",
         )
     )
