@@ -247,7 +247,7 @@ class RobustCurriculumCallback(BaseCallback):
 
             save_path = os.path.join(
                 self.save_dir, 
-                f"a2c_phase_{phase_idx}_step_{self.num_timesteps}"
+                f"phase_{phase_idx}_step_{self.num_timesteps}"
             )
             self.model.save(save_path)
 
