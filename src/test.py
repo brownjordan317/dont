@@ -50,7 +50,7 @@ def create_test_environment(scenario, origin, config, inference_mode=True):
     return MultiUAVEnv(
         uavs, 
         tl=tl, br=br, 
-        dt=0.05, 
+        dt=config["test"]["env"]["dt"], 
         mode=config["test"]["mode"],
         inference_mode=inference_mode  # Enable inference mode
         ), tl, br
@@ -360,6 +360,7 @@ def test(config):
         console.print(f" • Status: [bold]{'Completed' if done else 'Timed Out'}[/bold]")
         console.print(f" • Caution Violations: [yellow]{metrics['safety_violations']['caution']['total_count']}[/yellow]")
         console.print(f" • Critical Violations: [red]{metrics['safety_violations']['critical']['total_count']}[/red]")
+        console.print(f" • Geofence Violations: [red]{metrics['safety_violations']['geofence']['total_count']}[/red]")
         
         # Per-UAV distance stats
         console.print(f"\n[bold cyan]Distance Traveled per UAV:[/bold cyan]")

@@ -32,6 +32,10 @@ class MultiUAVEnv(gym.Env):
         self.crit_dist_breakers = []
         self.inference_mode = inference_mode  # Skip reward calculations when True
 
+        # Geofence violation tracking
+        self.geofence_exit_counts = [0 for _ in range(self.max_uavs)]
+        self._was_outside = [False for _ in range(self.max_uavs)]
+
         self.update_bounds(tl, br)
         self.obs_per_uav = 22
         
@@ -176,10 +180,22 @@ class MultiUAVEnv(gym.Env):
                 
                 if not wm.has_waypoints(): ac._enter_loiter()
 
-            if not self.inference_mode:
-                if not (self.min_lat < ac.position.latitude < self.max_lat and 
-                        self.min_lon < ac.position.longitude < self.max_lon):
-                    rewards[i] -= 50.0
+            inside = (
+                self.min_lat < ac.position.latitude < self.max_lat and 
+                self.min_lon < ac.position.longitude < self.max_lon
+            )
+
+            # Count exit event (transition only)
+            if not inside and not self._was_outside[i]:
+                self.geofence_exit_counts[i] += 1
+                self._was_outside[i] = True
+
+            if inside:
+                self._was_outside[i] = False
+
+            # Apply timestep penalty (training only)
+            if not self.inference_mode and not inside:
+                rewards[i] -= 50.0
 
         self._update_obs_buffer() 
 
@@ -377,6 +393,8 @@ class MultiUAVEnv(gym.Env):
     def reset(self, seed=None):
         super().reset(seed=seed)
         self.current_step = 0
+        self.geofence_exit_counts = [0 for _ in range(self.max_uavs)]
+        self._was_outside = [False for _ in range(self.max_uavs)]
         for ac in self.aircraft_list:
             # Reset distance tracking
             ac.distance_traveled = 0.0
@@ -422,11 +440,16 @@ class MultiUAVEnv(gym.Env):
                 "critical": {
                     "total_count": len(self.crit_dist_breakers),
                     "pairs": self.crit_dist_breakers
+                },
+                "geofence": {
+                    "total_count": sum(self.geofence_exit_counts),
+                    "counts": self.geofence_exit_counts
                 }
+                
             }
         }
 
-        for ac in self.aircraft_list:
+        for i, ac in enumerate(self.aircraft_list):
             # 1. Position and Heading
             metrics["telemetry"].append({
                 "id": ac.id_tag,
@@ -441,7 +464,7 @@ class MultiUAVEnv(gym.Env):
             metrics["mission_stats"].append({
                 "id": ac.id_tag,
                 "waypoints_reached": len(ac.waypoint_manager.hit_waypoints),
-                "dist_navigating": ac.distance_traveled
+                "dist_navigating": ac.distance_traveled,
             })
 
         return metrics

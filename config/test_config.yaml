@@ -2,10 +2,10 @@
 test:
   algorithm: "A2C" # SAC | PPO | A2C
   device: "cpu" # cpu | cuda
-  model_path: "/home/megrad/Documents/GitHub/dont/models_a2c_2/A2C_uav_curriculum.zip" # The path to the trained model to test
+  model_path: "/home/megrad/Documents/GitHub/dont/models_a2c/a2c_uav_curriculum.zip" # The path to the trained model to test
   test_name: "test"
   save_dir: "reports"
-  save_visuals: false # Set to false to skip saving visuals
+  save_visuals: False # Set to false to skip saving visuals
   inference_mode: false # Set to true to run in inference mode
   wp_hit_radius: 30 # The radius in meters for counting a waypoint as reached
   caution_dist: 30 # This is the distance between each other that drones start becoming nervous
@@ -20,7 +20,7 @@ test:
     origin: [37.7749, -122.4194] # The origin of the environment (latitude, longitude)
     box_size: 1500 # The maximum box size for this environment in meters
     max_steps: 10000 # The maximum number of steps to test for 
-    dt: 0.3 # The number of seconds per step
+    dt: 0.05 # The number of seconds per step
   mode: "gen_mission" # gen_mission or manual_mission using gen_mission will auto gen waypoints as the drone flies and the manual_mission will fly the waypoints from the set missions below
   missions:
     "UAV-1":
@@ -41,11 +41,11 @@ test:
         - - 37.774814
           - -122.414403
 
-    # "UAV-3":
-    #   initial_position: [37.7745, -122.4190]
-    #   initial_heading: 270
-    #   cruise_speed: 20
-    #   turning_radius: 30
-    #   waypoints:
-    #     - - 37.774814
-    #       - -122.414403
+    "UAV-3":
+      initial_position: [37.7745, -122.4190]
+      initial_heading: 270
+      cruise_speed: 20
+      turning_radius: 30
+      waypoints:
+        - - 37.774814
+          - -122.414403
