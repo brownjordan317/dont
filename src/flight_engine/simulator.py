@@ -1,10 +1,10 @@
 import numpy as np
 from typing import List, Optional, Tuple
 
-from dont.src.flight_engine.helpers import wrap_angle, Position, FlightMode
-from dont.src.flight_engine.trans_coorders import CoordinateTransformer
-from dont.src.flight_engine.wp_manager import WaypointManager
-from dont.src.flight_engine.flight_calcs import FlightDynamics
+from flight_engine.helpers import wrap_angle, Position, FlightMode
+from flight_engine.trans_coorders import CoordinateTransformer
+from flight_engine.wp_manager import WaypointManager
+from flight_engine.flight_calcs import FlightDynamics
 
 # ============================================================================
 # FIXED WING AIRCRAFT

@@ -2,7 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from typing import List, Tuple
 
-from dont.src.flight_engine.simulator import FixedWingAircraft
+from flight_engine.simulator import FixedWingAircraft
 
 # ============================================================================
 # VISUALIZATION

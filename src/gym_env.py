@@ -1,8 +1,8 @@
 import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
-from dont.src.flight_engine.helpers import Position, FlightMode
-from dont.src.flight_engine.trans_coorders import CoordinateTransformer
+from flight_engine.helpers import Position, FlightMode
+from flight_engine.trans_coorders import CoordinateTransformer
 
 class MultiUAVEnv(gym.Env):
     def __init__(

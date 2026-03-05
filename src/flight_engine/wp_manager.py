@@ -1,7 +1,7 @@
 from collections import deque
 from typing import List, Optional, Deque
 
-from dont.src.flight_engine.helpers import Position
+from flight_engine.helpers import Position
 
 # ============================================================================
 # WAYPOINT MANAGER
