@@ -1,8 +1,8 @@
 import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
-from flight_engine.helpers import Position, FlightMode
-from flight_engine.trans_coorders import CoordinateTransformer
+from dont.src.flight_engine.helpers import Position, FlightMode
+from dont.src.flight_engine.trans_coorders import CoordinateTransformer
 
 class MultiUAVEnv(gym.Env):
     def __init__(
@@ -395,9 +395,17 @@ class MultiUAVEnv(gym.Env):
         self.current_step = 0
         self.geofence_exit_counts = [0 for _ in range(self.max_uavs)]
         self._was_outside = [False for _ in range(self.max_uavs)]
+        
+        # --- CRITICAL: Clear the collision memory ---
+        self.caution_dist_breakers = []
+        self.crit_dist_breakers = []
+        # ---------------------------------------------
+        
         for ac in self.aircraft_list:
             # Reset distance tracking
             ac.distance_traveled = 0.0
+            ac.waypoint_manager.waypoint_queue.clear()
+            ac.waypoint_manager.current_waypoint = None
             
             if self.mode == 'gen_mission':
                 ac.position = Position(
@@ -412,15 +420,16 @@ class MultiUAVEnv(gym.Env):
                     ac.dynamics.cruise_speed + ac.speed_variance
                 )
                 ac.heading = np.random.uniform(-np.pi, np.pi)
-                ac.waypoint_manager.waypoint_queue.clear()
-                ac.waypoint_manager.current_waypoint = None
+                
                 self._refill_mission(ac)
+            elif self.mode == 'manual_mission':
+                ac.position = ac.initial_pos
+    
             ac.waypoint_manager.hit_waypoints.clear()
+            ac.waypoint_manager.reset()
 
         # Batch update coordinate caches
         self._sync_local_caches()
-
-        # Replace the observation loop with the vectorized call:
         self._update_obs_buffer()
         
         return self._obs_buffer.copy(), {}

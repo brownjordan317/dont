@@ -1,16 +1,10 @@
-"""
-Many of the features of this class are only used in the just fly a path example
-that is meant for testing the physics and visualizer. However, portions of this
-class are still used in the main training and testing pipelines, so it is not deleted.
-"""
-
 import numpy as np
 from typing import List, Optional, Tuple
 
-from flight_engine.helpers import wrap_angle, Position, FlightMode
-from flight_engine.trans_coorders import CoordinateTransformer
-from flight_engine.wp_manager import WaypointManager
-from flight_engine.flight_calcs import FlightDynamics
+from dont.src.flight_engine.helpers import wrap_angle, Position, FlightMode
+from dont.src.flight_engine.trans_coorders import CoordinateTransformer
+from dont.src.flight_engine.wp_manager import WaypointManager
+from dont.src.flight_engine.flight_calcs import FlightDynamics
 
 # ============================================================================
 # FIXED WING AIRCRAFT
@@ -25,6 +19,7 @@ class FixedWingAircraft:
                  speed_variance = 0, turning_variance = 0):
         self.id_tag = id_tag
         self.position = Position(initial_position.latitude, initial_position.longitude)
+        self.initial_pos = self.position
         self.heading = initial_heading
         self.color = color
         self.speed_variance = speed_variance
@@ -109,7 +104,11 @@ class FixedWingAircraft:
             x, y, self.heading, turn_amount)
         
         self.heading = new_heading
-        self._update_position(x, y, transformer)
+        lat, lon = transformer.local_to_geo(x, y)
+        new_pos = Position(lat, lon)
+        
+        self.position = new_pos
+        self.path_history.append(Position(lat, lon))
     
     def _enter_loiter(self):
         """Enters loiter mode"""
@@ -118,4 +117,3 @@ class FixedWingAircraft:
             self.position.latitude, 
             self.position.longitude
         )
-    

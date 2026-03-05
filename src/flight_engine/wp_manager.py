@@ -1,7 +1,7 @@
 from collections import deque
 from typing import List, Optional, Deque
 
-from flight_engine.helpers import Position
+from dont.src.flight_engine.helpers import Position
 
 # ============================================================================
 # WAYPOINT MANAGER
@@ -45,3 +45,7 @@ class WaypointManager:
     def queue_size(self) -> int:
         """Get number of queued waypoints (excluding current)"""
         return len(self.waypoint_queue)
+    
+    def reset(self):
+        self.waypoint_queue = deque()
+        self.current_waypoint = None
