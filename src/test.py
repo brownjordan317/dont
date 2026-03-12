@@ -61,6 +61,7 @@ def create_test_environment(scenario, origin, config, inference_mode=True):
 
 def run_and_record_episode(model, env, transformer, max_steps):
     obs, _ = env.reset()
+
     uav_data = [{'id': ac.id_tag, 'positions': [], 'headings': [], 
                  'waypoints_visited': [], 'all_waypoints': [], 
                  'current_targets': []} for ac in env.aircraft_list]
@@ -88,7 +89,6 @@ def run_and_record_episode(model, env, transformer, max_steps):
 
         action, _ = model.predict(obs, deterministic=True)
         obs, reward, done, _, info = env.step(action)
-
         # Faster check for waypoint hits
         for i, ac in enumerate(env.aircraft_list):
             if getattr(ac, 'last_waypoint_hit_pos', None):
@@ -133,8 +133,13 @@ def run_light_episode(model, env, max_steps):
             step_count += 1
             
             progress.update(task, advance=1)
+        
+        if not done:
+            truncated = True
+        else:
+            truncated = False
     
-    return step_count, total_reward, info.get('waypoints_hit', 0), done
+    return step_count, total_reward, info.get('waypoints_hit', 0), done, truncated
 
 # ================================================================
 # VIDEO GENERATION (Optimized with Blitting & Pre-calc)

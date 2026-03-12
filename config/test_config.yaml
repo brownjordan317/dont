@@ -2,7 +2,7 @@
 test:
   algorithm: "A2C" # SAC | PPO | A2C
   device: "cpu" # cpu | cuda
-  model_path: "/home/megrad/Documents/GitHub/dont/models_a2c/a2c_uav_curriculum.zip" # The path to the trained model to test
+  model_path: "models_a2c/a2c_uav_curriculum.zip" # The path to the trained model to test
   test_name: "test"
   save_dir: "reports"
   save_visuals: False # Set to false to skip saving visuals
@@ -12,15 +12,15 @@ test:
   critical_dist: 3 # This is the critical distance that will lead the system to a crash
 
   # Video settings (NEW)
-  create_video: true      # Set to false to skip video creation
+  save_visuals: false      # Set to false to skip video creation
   video_fps: 30           # Frames per second (24-60)
   video_speed: 3          # Speed multiplier (1=real-time, 3=3x speed)
   
   env: # The environment to test on
     origin: [37.7749, -122.4194] # The origin of the environment (latitude, longitude)
     box_size: 1500 # The maximum box size for this environment in meters
-    max_steps: 10000 # The maximum number of steps to test for 
-    dt: 0.05 # The number of seconds per step
+    max_steps: 2_000 # The maximum number of steps to test for 
+    dt: 0.3 # The number of seconds per step
   mode: "gen_mission" # gen_mission or manual_mission using gen_mission will auto gen waypoints as the drone flies and the manual_mission will fly the waypoints from the set missions below
   missions:
     "UAV-1":
@@ -41,11 +41,11 @@ test:
         - - 37.774814
           - -122.414403
 
-    "UAV-3":
-      initial_position: [37.7745, -122.4190]
-      initial_heading: 270
-      cruise_speed: 20
-      turning_radius: 30
-      waypoints:
-        - - 37.774814
-          - -122.414403
+    # "UAV-3":
+    #   initial_position: [37.7745, -122.4190]
+    #   initial_heading: 270
+    #   cruise_speed: 20
+    #   turning_radius: 30
+    #   waypoints:
+    #     - - 37.774814
+    #       - -122.414403

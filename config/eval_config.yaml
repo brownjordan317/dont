@@ -1,0 +1,26 @@
+eval_models:
+  A2C:
+    model_path: "models_a2c/a2c_uav_curriculum.zip"
+    device: "cpu"
+
+  PPO:
+    model_path: "models_ppo/ppo_uav_curriculum.zip"
+    device: "cpu"
+
+  SAC:
+    model_path: "models_sac/sac_uav_curriculum.zip"
+    device: "cuda" # cuda for sac only
+
+env:
+  box_min_m: 800
+  box_max_m: 1_600
+  max_steps: 10_000
+  dt: 0.5
+
+drone_settings:
+  num_drones: 2
+  num_wps_per_drone: 20
+  max_cruise_speed: 30.0
+  min_cruise_speed: 20.0
+  max_turning_radius: 40.0
+  min_turning_radius: 20.0
