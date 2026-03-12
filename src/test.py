@@ -349,9 +349,11 @@ def test(config):
     )
     max_steps = config["test"]["env"]["max_steps"]
     
+    env.clear_missions = False
+
     if light_mode:
         # Light mode - just run and get stats
-        steps, total_reward, arrivals, done = run_light_episode(model, env, max_steps, model_cls)
+        steps, total_reward, arrivals, done, truncated = run_light_episode(model, env, max_steps, model_cls)
         
         # Get safety metrics and per-UAV stats
         metrics = env.get_uav_metrics()
