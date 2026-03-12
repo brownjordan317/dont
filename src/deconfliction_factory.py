@@ -9,7 +9,7 @@ console = Console()
 class DeconflictionAutoPilotFactory:
     def __init__(self, mode):
         config_path = os.path.join(
-            "config", f"{'test' if 'test' in mode else 'train'}_config.yaml"
+            "config", f"{mode}_config.yaml"
         )
         self.config = self.read_config(config_path)
 
@@ -21,6 +21,10 @@ class DeconflictionAutoPilotFactory:
             console.print(Panel.fit("[bold blue]Starting Testing Mode[/bold blue]"))
             from test import test
             self.run = test
+        elif mode == 'eval':
+            console.print(Panel.fit("[bold red]Starting Evaluation Mode[/bold red]"))
+            from eval import eval
+            self.run = eval
 
     
     def read_config(self, config_path):
@@ -38,9 +42,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--mode",
-        choices=["train", "test", "test_light"],
+        choices=["train", "test", "eval"],
         default="train",
-        help="Mode to run the factory in: 'train' or 'test'."
+        help="Mode to run the factory in: 'train', 'test', or 'eval'."
     )
     args = parser.parse_args()
 

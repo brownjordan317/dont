@@ -105,7 +105,7 @@ def run_and_record_episode(model, env, transformer, max_steps):
 # LIGHT MODE (no video, just statistics)
 # ================================================================
 
-def run_light_episode(model, env, max_steps):
+def run_light_episode(model, env, max_steps, model_cls):
     """Run episode without recording positions - just get metrics"""
     obs, _ = env.reset()
     
@@ -123,7 +123,7 @@ def run_light_episode(model, env, max_steps):
         console=console
     ) as progress:
         
-        task = progress.add_task("[yellow]Simulating...", total=max_steps)
+        task = progress.add_task(f"[yellow]Simulating {model_cls}...", total=max_steps)
 
         while not done and step_count < max_steps:
             action, _ = model.predict(obs, deterministic=True)
@@ -351,7 +351,7 @@ def test(config):
     
     if light_mode:
         # Light mode - just run and get stats
-        steps, total_reward, arrivals, done = run_light_episode(model, env, max_steps)
+        steps, total_reward, arrivals, done = run_light_episode(model, env, max_steps, model_cls)
         
         # Get safety metrics and per-UAV stats
         metrics = env.get_uav_metrics()

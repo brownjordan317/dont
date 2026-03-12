@@ -1,15 +1,18 @@
 eval_models:
   A2C:
     model_path: "models_a2c/a2c_uav_curriculum.zip"
-    device: "cpu"
+    device: "cuda"
 
   PPO:
     model_path: "models_ppo/ppo_uav_curriculum.zip"
-    device: "cpu"
+    device: "cuda"
 
   SAC:
     model_path: "models_sac/sac_uav_curriculum.zip"
     device: "cuda" # cuda for sac only
+
+eval:
+  num_missions: 3
 
 env:
   box_min_m: 800
