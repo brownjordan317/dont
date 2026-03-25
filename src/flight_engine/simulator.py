@@ -24,6 +24,8 @@ class FixedWingAircraft:
         self.color = color
         self.speed_variance = speed_variance
         self.turning_variance = turning_variance
+        self.base_turning_radius = turning_radius
+        self.base_cruise_speed = cruise_speed
         self.turning_radius = turning_radius
         self.cruise_speed = cruise_speed
 
@@ -45,6 +47,14 @@ class FixedWingAircraft:
         # Add initial waypoints
         if mission:
             self.add_waypoints(mission)
+
+    def set_flight_dynamics(self, turning_radius: float, cruise_speed: float):
+        """Keep the aircraft and dynamics model in sync after reset-time sampling."""
+        self.turning_radius = turning_radius
+        self.cruise_speed = cruise_speed
+        self.dynamics.turning_radius = turning_radius
+        self.dynamics.cruise_speed = cruise_speed
+        self.dynamics.max_turn_rate = cruise_speed / turning_radius
     
     def add_wp(self, waypoint: Position):
         self.waypoint_manager.add_waypoint(waypoint)

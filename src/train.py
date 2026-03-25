@@ -8,6 +8,7 @@ from rich.panel import Panel
 from gym_env import MultiUAVEnv
 from flight_engine.simulator import FixedWingAircraft
 from flight_engine.helpers import Position
+from vec_env_utils import make_training_env, save_vecnormalize_stats, unwrap_env
 
 console = Console()
 
@@ -76,6 +77,12 @@ ALGO_REGISTRY = {
     },
 }
 
+
+def save_model_artifacts(model, save_path: str):
+    """Save the model and any VecNormalize statistics alongside it."""
+    model.save(save_path)
+    return save_vecnormalize_stats(model, save_path)
+
 class RobustCurriculumCallback(BaseCallback):
     def __init__(
             self, 
@@ -92,6 +99,10 @@ class RobustCurriculumCallback(BaseCallback):
 
         self.current_phase_idx = 0
         os.makedirs(self.save_dir, exist_ok=True)
+
+    def _get_base_env(self):
+        """Access the underlying single-env instance through VecEnv wrappers."""
+        return unwrap_env(self.training_env)
 
     def set_curriculum(self, config):
         """
@@ -190,7 +201,7 @@ class RobustCurriculumCallback(BaseCallback):
         Adds a new drone to the environment at the origin with a random 
         heading.
         """
-        env = self.training_env.envs[0].unwrapped
+        env = self._get_base_env()
         new_id = f"UAV-{len(env.aircraft_list) + 1}"
 
         heading = np.random.uniform(-np.pi, np.pi)
@@ -202,7 +213,7 @@ class RobustCurriculumCallback(BaseCallback):
             self.config["train"]["drone_speed"],
             self.config["train"]["drone_turn_rate"],
             speed_variance = self.config["train"]["speed_var"], 
-            turning_variance = self.config["train"]["speed_var"]
+            turning_variance = self.config["train"]["turn_var"]
         )
 
         env.aircraft_list.append(new_uav)
@@ -213,7 +224,7 @@ class RobustCurriculumCallback(BaseCallback):
         phase of the curriculum.
         """
         _, _, _, target_uavs = self._get_curriculum_phase()
-        env = self.training_env.envs[0].unwrapped
+        env = self._get_base_env()
 
         while len(env.aircraft_list) < target_uavs:
             self._add_drone()
@@ -249,14 +260,18 @@ class RobustCurriculumCallback(BaseCallback):
                 self.save_dir, 
                 f"phase_{phase_idx}_step_{self.num_timesteps}"
             )
-            self.model.save(save_path)
+            stats_path = save_model_artifacts(self.model, save_path)
 
             console.print(
                 Panel(
                     f"[bold magenta]MODEL SAVED[/bold magenta]\n"
                     f"Phase: {phase_idx}\n"
                     f"Progress ≥ {phase[0]*100:.0f}%\n"
-                    f"Saved to:\n{save_path}",
+                    f"Saved to:\n{save_path}"
+                    + (
+                        f"\nNormalization stats:\n{stats_path}"
+                        if stats_path else ""
+                    ),
                     expand=False,
                 )
             )
@@ -311,7 +326,7 @@ def train(config):
             config["train"]["drone_speed"],
             config["train"]["drone_turn_rate"],
             speed_variance = config["train"]["speed_var"], 
-            turning_variance = config["train"]["speed_var"]
+            turning_variance = config["train"]["turn_var"]
         )
     ]
 
@@ -326,18 +341,21 @@ def train(config):
 
     # dt: Time step size for physics simulation 
     # (smaller values yield more realistic simulation)
-    env = MultiUAVEnv(
-        initial_uavs, 
-        tl=tl, 
-        br=br, 
-        dt=config["train"]["dt"],
-        max_steps=config["train"]["max_steps"],
-        boundary_margin=config["train"]["boundary_margin"],
-        mission_waypoint_count=config["train"]["mission_waypoint_count"],
-        mode='gen_mission', #gen_mission or manual_mission
-        caution_dist=config["train"]["caution_dist"],
-        critical_dist=config["train"]["critical_dist"]
-    ) 
+    def make_env():
+        return MultiUAVEnv(
+            initial_uavs,
+            tl=tl,
+            br=br,
+            dt=config["train"]["dt"],
+            max_steps=config["train"]["max_steps"],
+            boundary_margin=config["train"]["boundary_margin"],
+            mission_waypoint_count=config["train"]["mission_waypoint_count"],
+            mode='gen_mission', #gen_mission or manual_mission
+            caution_dist=config["train"]["caution_dist"],
+            critical_dist=config["train"]["critical_dist"]
+        )
+
+    env = make_training_env(make_env, config["train"])
 
     model = algo_info["cls"](
         "MlpPolicy",
@@ -356,15 +374,18 @@ def train(config):
             callback=callback,
             progress_bar=True,
             tb_log_name=config["train"]["model_name"],
+            log_interval=100
         )
-        model.save(
+        save_model_artifacts(
+            model,
             os.path.join(
                 config["train"]["save_dir"], 
                 config["train"]["model_name"]
             )
         )
     except KeyboardInterrupt:
-        model.save(
+        save_model_artifacts(
+            model,
             os.path.join(
                 config["train"]["save_dir"], 
                 f"{config['train']['model_name']}_interrupted"

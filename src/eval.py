@@ -7,6 +7,7 @@ from test import run_light_episode
 from flight_engine.simulator import FixedWingAircraft
 from flight_engine.helpers import Position
 from gym_env import MultiUAVEnv
+from vec_env_utils import make_eval_env, unwrap_env
 
 from stable_baselines3 import A2C, PPO, SAC
 
@@ -144,6 +145,8 @@ class Evaluator:
             br=self.mission["config"]["env"]["bottom_right"],
             dt=self.mission["config"]["env"]["dt"],
             mode="manual_mission",
+            caution_dist=self.mission["config"]["env"].get("caution_dist", 30.0),
+            critical_dist=self.mission["config"]["env"].get("critical_dist", 3.0),
             inference_mode=False
         )
 
@@ -171,7 +174,11 @@ class Evaluator:
                 device=alg_cfg["device"]
             )
 
-            self.models[alg_name] = model
+            self.models[alg_name] = {
+                "model": model,
+                "model_path": alg_cfg["model_path"],
+                "vecnormalize_path": alg_cfg.get("vecnormalize_path"),
+            }
 
             self.history.setdefault(alg_name, {
                 "rewards": [],
@@ -189,20 +196,32 @@ class Evaluator:
 
         self.metrics = {}
 
-        for alg_name, model in self.models.items():
+        for alg_name, model_info in self.models.items():
 
-            env = self.create_test_environment()
+            raw_env = self.create_test_environment()
+            env, stats_path = make_eval_env(
+                lambda raw_env=raw_env: raw_env,
+                model_path=model_info["model_path"],
+                vecnormalize_path=model_info["vecnormalize_path"],
+                norm_reward=False,
+            )
+            base_env = unwrap_env(env)
+            base_env.clear_missions = False
 
-            env.clear_missions = False
+            model = model_info["model"]
+            model.set_env(env)
 
-            step_count, reward, _, done, truncated = run_light_episode(
+            if stats_path:
+                console.print(f"[green]{alg_name} VecNormalize:[/green] {stats_path}")
+            else:
+                console.print(f"[yellow]{alg_name} running without VecNormalize stats.[/yellow]")
+
+            step_count, reward, _, done, truncated, sim = run_light_episode(
                 model,
                 env,
                 self.mission["config"]["env"]["max_steps"],
                 alg_name
             )
-
-            sim = env.get_uav_metrics()
 
             self.metrics[alg_name] = {
                 "reward": reward,
