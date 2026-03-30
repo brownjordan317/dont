@@ -12,9 +12,17 @@ import os
 from gym_env import MultiUAVEnv
 from flight_engine.simulator import FixedWingAircraft
 from flight_engine.helpers import Position
+from config_utils import get_tuning_section
 from vec_env_utils import make_eval_env, reset_rollout_env, step_rollout_env, unwrap_env
 
 console = Console()
+
+
+def _heading_to_radians(value):
+    heading = float(value)
+    if abs(heading) > (2 * np.pi):
+        return np.deg2rad(heading)
+    return heading
 
 # ================================================================
 # ENV CREATION
@@ -27,6 +35,11 @@ def create_test_environment(scenario, origin, config, inference_mode=True):
     Args:
         inference_mode: If True, skips reward calculations for faster inference
     """
+    tuning = get_tuning_section(config, "test")
+    env_cfg = tuning["env"]
+    reward_cfg = tuning["rewards"]
+    hard_safety_cfg = tuning["hard_safety"]
+    anti_circling_cfg = tuning["anti_circling"]
     box_size = scenario["box_size"]
     uavs = []
     for id, params in config["test"]["missions"].items():
@@ -36,7 +49,7 @@ def create_test_environment(scenario, origin, config, inference_mode=True):
                 params["initial_position"][0], 
                 params["initial_position"][1]
             ),
-            initial_heading=params["initial_heading"],
+            initial_heading=_heading_to_radians(params["initial_heading"]),
             cruise_speed=params["cruise_speed"],
             turning_radius=params["turning_radius"],
             mission=list(params["waypoints"]),
@@ -51,11 +64,15 @@ def create_test_environment(scenario, origin, config, inference_mode=True):
     return MultiUAVEnv(
         uavs, 
         tl=tl, br=br, 
-        dt=config["test"]["env"]["dt"], 
-        mode=config["test"]["mode"],
-        caution_dist=config["test"].get("caution_dist", 30.0),
-        critical_dist=config["test"].get("critical_dist", 3.0),
-        inference_mode=inference_mode  # Enable inference mode
+        dt=env_cfg["dt"],
+        max_steps=env_cfg["max_steps"],
+        mode=env_cfg["mode"],
+        caution_dist=env_cfg["caution_dist"],
+        critical_dist=env_cfg["critical_dist"],
+        inference_mode=inference_mode,
+        reward_config=reward_cfg,
+        hard_safety_config=hard_safety_cfg,
+        anti_circling_config=anti_circling_cfg,
         ), tl, br
 
 # ================================================================
@@ -178,6 +195,7 @@ def create_video(
         config, fps=30, speed_multiplier=1
     ):
     console.print("[cyan]Creating video...[/cyan]")
+    env_cfg = get_tuning_section(config, "test")["env"]
     tl_x, tl_y = transformer.geo_to_local(tl[0], tl[1])
     br_x, br_y = transformer.geo_to_local(br[0], br[1])
 
@@ -215,11 +233,11 @@ def create_video(
         )
         
         c30 = Circle(
-            (0, 0), config["test"]["caution_dist"], color=color, 
+            (0, 0), env_cfg["caution_dist"], color=color, 
             fill=False, linestyle='--', alpha=0.35, animated=True
         )
         c5 = Circle(
-            (0, 0), config["test"]["critical_dist"], color=color, 
+            (0, 0), env_cfg["critical_dist"], color=color, 
             fill=True, alpha=0.2, animated=True
         )
         glow = Circle(
@@ -289,7 +307,7 @@ def create_video(
             # Pulse Logic
             target = art['current_targets'][step]
             if target:
-                rad_base = config["test"]["wp_hit_radius"]
+                rad_base = env_cfg["wp_hit_radius"]
                 pulse = (rad_base * 0.7) + (rad_base * 0.3) * (0.5 * (1 + np.sin(frame_num * 0.05)))
                 art['glow'].set_center(target)
                 art['glow'].set_radius(pulse)
@@ -340,6 +358,8 @@ def create_video(
 # ================================================================
 
 def test(config):
+    tuning = get_tuning_section(config, "test")
+    env_cfg = tuning["env"]
     # Determine mode (light or full video)
     light_mode = not config["test"].get("save_visuals", False)
     light_mode = False
@@ -350,10 +370,10 @@ def test(config):
     
     os.makedirs(config["test"]["save_dir"], exist_ok=True)
     
-    origin = [float(x) for x in config["test"]["env"]["origin"]]
+    origin = [float(x) for x in env_cfg["origin"]]
     scenario_info = {
         "name": config["test"]["test_name"], 
-        "box_size": config["test"]["env"]["box_size"]
+        "box_size": env_cfg["box_size"]
     }
     
     # Create environment with inference mode enabled
@@ -379,7 +399,7 @@ def test(config):
         env=env,
         device=config["test"].get("device", "cpu")
     )
-    max_steps = config["test"]["env"]["max_steps"]
+    max_steps = env_cfg["max_steps"]
     
     base_env.clear_missions = False
 
@@ -402,6 +422,8 @@ def test(config):
         console.print(f" • Caution Violations: [yellow]{metrics['safety_violations']['caution']['total_count']}[/yellow]")
         console.print(f" • Critical Violations: [red]{metrics['safety_violations']['critical']['total_count']}[/red]")
         console.print(f" • Geofence Violations: [red]{metrics['safety_violations']['geofence']['total_count']}[/red]")
+        console.print(f" • Hard Safety Uses: [magenta]{metrics['safety_violations']['hard_safety']['total_count']}[/magenta]")
+        console.print(f" • Anti-Circling Uses: [cyan]{metrics['safety_violations']['anti_circling']['total_count']}[/cyan]")
         
         # Per-UAV distance stats
         console.print(f"\n[bold cyan]Distance Traveled per UAV:[/bold cyan]")
@@ -423,6 +445,8 @@ def test(config):
         console.print(f"Steps: {steps}")
         console.print(f"Caution Violations: {metrics['safety_violations']['caution']['total_count']}")
         console.print(f"Critical Violations: {metrics['safety_violations']['critical']['total_count']}")
+        console.print(f"Hard Safety Uses: {metrics['safety_violations']['hard_safety']['total_count']}")
+        console.print(f"Anti-Circling Uses: {metrics['safety_violations']['anti_circling']['total_count']}")
         
         # Per-UAV distance stats
         console.print(f"\n[bold cyan]Distance Traveled:[/bold cyan]")

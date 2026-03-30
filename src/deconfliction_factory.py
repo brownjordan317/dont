@@ -1,17 +1,14 @@
-import yaml
 from rich.console import Console
 from rich.panel import Panel
 import argparse
-import os
+
+from config_utils import load_mode_config
 
 console = Console()
 
 class DeconflictionAutoPilotFactory:
     def __init__(self, mode):
-        config_path = os.path.join(
-            "config", f"{mode}_config.yaml"
-        )
-        self.config = self.read_config(config_path)
+        self.config = self.read_config(mode)
 
         if mode == 'train':
             console.print(Panel.fit("[bold green]Starting Training Mode[/bold green]"))
@@ -27,14 +24,12 @@ class DeconflictionAutoPilotFactory:
             self.run = eval
 
     
-    def read_config(self, config_path):
-        try:
-            with open(config_path, 'r') as f:
-                config = yaml.safe_load(f)
-        except FileNotFoundError:
-            console.print(f"[red]Error:[/red] Config file not found at {config_path}")
-            raise
-        console.print(f"[green]✓[/green] Config loaded successfully from {config_path}")
+    def read_config(self, mode):
+        config = load_mode_config(mode)
+        console.print(
+            f"[green]✓[/green] Config loaded successfully from "
+            f"config/{mode}_config.yaml + config/tuning_config.yaml"
+        )
         return config
     
 

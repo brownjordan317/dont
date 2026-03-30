@@ -8,6 +8,7 @@ from rich.panel import Panel
 from gym_env import MultiUAVEnv
 from flight_engine.simulator import FixedWingAircraft
 from flight_engine.helpers import Position
+from config_utils import get_tuning_section
 from vec_env_utils import make_training_env, save_vecnormalize_stats, unwrap_env
 
 console = Console()
@@ -96,6 +97,7 @@ class RobustCurriculumCallback(BaseCallback):
         self.total_timesteps = config["train"]["total_timesteps"]
         self.save_dir = config["train"]["save_dir"]
         self.curriculum = self.set_curriculum(config)
+        self.flight_cfg = get_tuning_section(config, "train")["flight"]
 
         self.current_phase_idx = 0
         os.makedirs(self.save_dir, exist_ok=True)
@@ -210,10 +212,10 @@ class RobustCurriculumCallback(BaseCallback):
             new_id,
             Position(self.origin[0], self.origin[1]),
             heading,
-            self.config["train"]["drone_speed"],
-            self.config["train"]["drone_turn_rate"],
-            speed_variance = self.config["train"]["speed_var"], 
-            turning_variance = self.config["train"]["turn_var"]
+            self.flight_cfg["cruise_speed_mps"],
+            self.flight_cfg["turning_radius_m"],
+            speed_variance=self.flight_cfg["cruise_speed_variation_mps"],
+            turning_variance=self.flight_cfg["turning_radius_variation_m"],
         )
 
         env.aircraft_list.append(new_uav)
@@ -296,6 +298,12 @@ class RobustCurriculumCallback(BaseCallback):
         return True
 
 def train(config):
+    tuning = get_tuning_section(config, "train")
+    env_cfg = tuning["env"]
+    flight_cfg = tuning["flight"]
+    reward_cfg = tuning["rewards"]
+    hard_safety_cfg = tuning["hard_safety"]
+    anti_circling_cfg = tuning["anti_circling"]
     algo_name = config["train"].get("algorithm", "SAC").upper()
 
     if algo_name not in ALGO_REGISTRY:
@@ -323,10 +331,10 @@ def train(config):
             "UAV-1",
             Position(origin[0], origin[1]),
             initial_heading,
-            config["train"]["drone_speed"],
-            config["train"]["drone_turn_rate"],
-            speed_variance = config["train"]["speed_var"], 
-            turning_variance = config["train"]["turn_var"]
+            flight_cfg["cruise_speed_mps"],
+            flight_cfg["turning_radius_m"],
+            speed_variance=flight_cfg["cruise_speed_variation_mps"],
+            turning_variance=flight_cfg["turning_radius_variation_m"],
         )
     ]
 
@@ -346,13 +354,16 @@ def train(config):
             initial_uavs,
             tl=tl,
             br=br,
-            dt=config["train"]["dt"],
-            max_steps=config["train"]["max_steps"],
-            boundary_margin=config["train"]["boundary_margin"],
-            mission_waypoint_count=config["train"]["mission_waypoint_count"],
-            mode='gen_mission', #gen_mission or manual_mission
-            caution_dist=config["train"]["caution_dist"],
-            critical_dist=config["train"]["critical_dist"]
+            dt=env_cfg["dt"],
+            max_steps=env_cfg["max_steps"],
+            boundary_margin=env_cfg["boundary_margin"],
+            mission_waypoint_count=env_cfg["mission_waypoint_count"],
+            mode=env_cfg["mode"],
+            caution_dist=env_cfg["caution_dist"],
+            critical_dist=env_cfg["critical_dist"],
+            reward_config=reward_cfg,
+            hard_safety_config=hard_safety_cfg,
+            anti_circling_config=anti_circling_cfg,
         )
 
     env = make_training_env(make_env, config["train"])

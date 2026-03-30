@@ -1,0 +1,1151 @@
+{
+  "meta": {
+    "started_at": "2026-03-30T13:05:46.236361+00:00",
+    "config": {
+      "eval_models": {
+        "A2C": {
+          "model_path": "models_a2c_2/a2c_uav_curriculum.zip",
+          "device": "cuda"
+        },
+        "PPO": {
+          "model_path": "models_ppo_2/ppo_uav_curriculum.zip",
+          "device": "cuda"
+        },
+        "SAC": {
+          "model_path": "models_sac_2/sac_uav_curriculum_interrupted.zip",
+          "device": "cuda"
+        }
+      },
+      "eval": {
+        "num_missions": 100
+      },
+      "output": {
+        "results_path": "results/eval_results.json"
+      },
+      "env": {
+        "box_min_m": 800,
+        "box_max_m": 1600,
+        "max_steps": 10000,
+        "dt": 0.5
+      },
+      "drone_settings": {
+        "num_drones": 2,
+        "num_wps_per_drone": 20,
+        "max_cruise_speed": 40.0,
+        "min_cruise_speed": 15.0,
+        "max_turning_radius": 60.0,
+        "min_turning_radius": 20.0
+      }
+    }
+  },
+  "missions": [
+    {
+      "mission_index": 1,
+      "timestamp": "2026-03-30T13:05:59.515911+00:00",
+      "origin": [
+        -48.613527491654196,
+        -12.132222219663305
+      ],
+      "top_left": [
+        -48.607395463524895,
+        -12.142346704643963
+      ],
+      "bottom_right": [
+        -48.6196595197835,
+        -12.122097734682647
+      ],
+      "algorithms": {
+        "A2C": {
+          "reward": 290287.7538394928,
+          "steps": 670,
+          "saliency_mean": 0.00034881793544627726,
+          "saliency_max": 0.00034881793544627726,
+          "mission_stats": [
+            {
+              "id": "UAV-0",
+              "waypoints_reached": 20,
+              "dist_navigating": 13400.0
+            },
+            {
+              "id": "UAV-1",
+              "waypoints_reached": 20,
+              "dist_navigating": 10400.0
+            }
+          ],
+          "safety_violations": {
+            "caution": {
+              "total_count": 1,
+              "pairs": [
+                [
+                  "UAV-0",
+                  "UAV-1"
+                ]
+              ]
+            },
+            "critical": {
+              "total_count": 0,
+              "pairs": []
+            },
+            "geofence": {
+              "total_count": 0,
+              "counts": [
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            }
+          }
+        },
+        "PPO": {
+          "reward": 271606.760748446,
+          "steps": 983,
+          "saliency_mean": 9.977477020584047e-05,
+          "saliency_max": 9.977477020584047e-05,
+          "mission_stats": [
+            {
+              "id": "UAV-0",
+              "waypoints_reached": 20,
+              "dist_navigating": 13520.0
+            },
+            {
+              "id": "UAV-1",
+              "waypoints_reached": 20,
+              "dist_navigating": 19660.0
+            }
+          ],
+          "safety_violations": {
+            "caution": {
+              "total_count": 0,
+              "pairs": []
+            },
+            "critical": {
+              "total_count": 0,
+              "pairs": []
+            },
+            "geofence": {
+              "total_count": 2,
+              "counts": [
+                0,
+                2,
+                0,
+                0,
+                0
+              ]
+            }
+          }
+        },
+        "SAC": {
+          "reward": -160012823.69193214,
+          "steps": 10000,
+          "saliency_mean": 3.23389504046645e-05,
+          "saliency_max": 0.00010179033415624872,
+          "mission_stats": [
+            {
+              "id": "UAV-0",
+              "waypoints_reached": 0,
+              "dist_navigating": 200000.0
+            },
+            {
+              "id": "UAV-1",
+              "waypoints_reached": 0,
+              "dist_navigating": 200000.0
+            }
+          ],
+          "safety_violations": {
+            "caution": {
+              "total_count": 0,
+              "pairs": []
+            },
+            "critical": {
+              "total_count": 0,
+              "pairs": []
+            },
+            "geofence": {
+              "total_count": 3,
+              "counts": [
+                1,
+                2,
+                0,
+                0,
+                0
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "mission_index": 2,
+      "timestamp": "2026-03-30T13:06:11.960023+00:00",
+      "origin": [
+        45.883323695838314,
+        -26.52582489517542
+      ],
+      "top_left": [
+        45.88706869886108,
+        -26.53429129299479
+      ],
+      "bottom_right": [
+        45.87957869281555,
+        -26.517358497356046
+      ],
+      "algorithms": {
+        "A2C": {
+          "reward": 252591.6936428547,
+          "steps": 602,
+          "saliency_mean": 0.0,
+          "saliency_max": 0.0,
+          "mission_stats": [
+            {
+              "id": "UAV-0",
+              "waypoints_reached": 20,
+              "dist_navigating": 12040.0
+            },
+            {
+              "id": "UAV-1",
+              "waypoints_reached": 20,
+              "dist_navigating": 8520.0
+            }
+          ],
+          "safety_violations": {
+            "caution": {
+              "total_count": 4,
+              "pairs": [
+                [
+                  "UAV-0",
+                  "UAV-1"
+                ],
+                [
+                  "UAV-0",
+                  "UAV-1"
+                ],
+                [
+                  "UAV-0",
+                  "UAV-1"
+                ],
+                [
+                  "UAV-0",
+                  "UAV-1"
+                ]
+              ]
+            },
+            "critical": {
+              "total_count": 0,
+              "pairs": []
+            },
+            "geofence": {
+              "total_count": 0,
+              "counts": [
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            }
+          }
+        },
+        "PPO": {
+          "reward": 265540.6098842174,
+          "steps": 670,
+          "saliency_mean": 0.0001069086865754798,
+          "saliency_max": 0.0001069086865754798,
+          "mission_stats": [
+            {
+              "id": "UAV-0",
+              "waypoints_reached": 20,
+              "dist_navigating": 12020.0
+            },
+            {
+              "id": "UAV-1",
+              "waypoints_reached": 20,
+              "dist_navigating": 13400.0
+            }
+          ],
+          "safety_violations": {
+            "caution": {
+              "total_count": 0,
+              "pairs": []
+            },
+            "critical": {
+              "total_count": 0,
+              "pairs": []
+            },
+            "geofence": {
+              "total_count": 3,
+              "counts": [
+                1,
+                2,
+                0,
+                0,
+                0
+              ]
+            }
+          }
+        },
+        "SAC": {
+          "reward": -185819791.73823985,
+          "steps": 10000,
+          "saliency_mean": 0.0,
+          "saliency_max": 0.0,
+          "mission_stats": [
+            {
+              "id": "UAV-0",
+              "waypoints_reached": 0,
+              "dist_navigating": 200000.0
+            },
+            {
+              "id": "UAV-1",
+              "waypoints_reached": 0,
+              "dist_navigating": 200000.0
+            }
+          ],
+          "safety_violations": {
+            "caution": {
+              "total_count": 0,
+              "pairs": []
+            },
+            "critical": {
+              "total_count": 0,
+              "pairs": []
+            },
+            "geofence": {
+              "total_count": 5,
+              "counts": [
+                2,
+                3,
+                0,
+                0,
+                0
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "mission_index": 3,
+      "timestamp": "2026-03-30T13:06:24.993096+00:00",
+      "origin": [
+        -27.46345487440513,
+        93.46171702393627
+      ],
+      "top_left": [
+        -27.45793537126771,
+        93.45409638946661
+      ],
+      "bottom_right": [
+        -27.46897437754255,
+        93.46933765840593
+      ],
+      "algorithms": {
+        "A2C": {
+          "reward": 307772.7353899479,
+          "steps": 650,
+          "saliency_mean": 0.0,
+          "saliency_max": 0.0,
+          "mission_stats": [
+            {
+              "id": "UAV-0",
+              "waypoints_reached": 20,
+              "dist_navigating": 13000.0
+            },
+            {
+              "id": "UAV-1",
+              "waypoints_reached": 20,
+              "dist_navigating": 11660.0
+            }
+          ],
+          "safety_violations": {
+            "caution": {
+              "total_count": 2,
+              "pairs": [
+                [
+                  "UAV-0",
+                  "UAV-1"
+                ],
+                [
+                  "UAV-0",
+                  "UAV-1"
+                ]
+              ]
+            },
+            "critical": {
+              "total_count": 0,
+              "pairs": []
+            },
+            "geofence": {
+              "total_count": 0,
+              "counts": [
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            }
+          }
+        },
+        "PPO": {
+          "reward": 274440.656973958,
+          "steps": 1007,
+          "saliency_mean": 4.583352347253822e-05,
+          "saliency_max": 4.583352347253822e-05,
+          "mission_stats": [
+            {
+              "id": "UAV-0",
+              "waypoints_reached": 20,
+              "dist_navigating": 13160.0
+            },
+            {
+              "id": "UAV-1",
+              "waypoints_reached": 20,
+              "dist_navigating": 20140.0
+            }
+          ],
+          "safety_violations": {
+            "caution": {
+              "total_count": 5,
+              "pairs": [
+                [
+                  "UAV-0",
+                  "UAV-1"
+                ],
+                [
+                  "UAV-0",
+                  "UAV-1"
+                ],
+                [
+                  "UAV-0",
+                  "UAV-1"
+                ],
+                [
+                  "UAV-0",
+                  "UAV-1"
+                ],
+                [
+                  "UAV-0",
+                  "UAV-1"
+                ]
+              ]
+            },
+            "critical": {
+              "total_count": 0,
+              "pairs": []
+            },
+            "geofence": {
+              "total_count": 1,
+              "counts": [
+                0,
+                1,
+                0,
+                0,
+                0
+              ]
+            }
+          }
+        },
+        "SAC": {
+          "reward": -192830223.48226458,
+          "steps": 10000,
+          "saliency_mean": 1.1149354577355552e-05,
+          "saliency_max": 0.00011182972957612947,
+          "mission_stats": [
+            {
+              "id": "UAV-0",
+              "waypoints_reached": 0,
+              "dist_navigating": 200000.0
+            },
+            {
+              "id": "UAV-1",
+              "waypoints_reached": 0,
+              "dist_navigating": 200000.0
+            }
+          ],
+          "safety_violations": {
+            "caution": {
+              "total_count": 0,
+              "pairs": []
+            },
+            "critical": {
+              "total_count": 0,
+              "pairs": []
+            },
+            "geofence": {
+              "total_count": 2,
+              "counts": [
+                1,
+                1,
+                0,
+                0,
+                0
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "mission_index": 4,
+      "timestamp": "2026-03-30T13:06:38.870045+00:00",
+      "origin": [
+        -35.172556978026,
+        -120.13014108964883
+      ],
+      "top_left": [
+        -35.167125453935014,
+        -120.1364934048035
+      ],
+      "bottom_right": [
+        -35.17798850211699,
+        -120.12378877449416
+      ],
+      "algorithms": {
+        "A2C": {
+          "reward": 278004.4884098768,
+          "steps": 579,
+          "saliency_mean": 0.0001993528421735391,
+          "saliency_max": 0.0001993528421735391,
+          "mission_stats": [
+            {
+              "id": "UAV-0",
+              "waypoints_reached": 20,
+              "dist_navigating": 10060.0
+            },
+            {
+              "id": "UAV-1",
+              "waypoints_reached": 20,
+              "dist_navigating": 11580.0
+            }
+          ],
+          "safety_violations": {
+            "caution": {
+              "total_count": 2,
+              "pairs": [
+                [
+                  "UAV-0",
+                  "UAV-1"
+                ],
+                [
+                  "UAV-0",
+                  "UAV-1"
+                ]
+              ]
+            },
+            "critical": {
+              "total_count": 0,
+              "pairs": []
+            },
+            "geofence": {
+              "total_count": 0,
+              "counts": [
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            }
+          }
+        },
+        "PPO": {
+          "reward": 252500.62924337387,
+          "steps": 808,
+          "saliency_mean": 0.00015882824664004147,
+          "saliency_max": 0.00015882824664004147,
+          "mission_stats": [
+            {
+              "id": "UAV-0",
+              "waypoints_reached": 20,
+              "dist_navigating": 10220.0
+            },
+            {
+              "id": "UAV-1",
+              "waypoints_reached": 20,
+              "dist_navigating": 16160.0
+            }
+          ],
+          "safety_violations": {
+            "caution": {
+              "total_count": 13,
+              "pairs": [
+                [
+                  "UAV-0",
+                  "UAV-1"
+                ],
+                [
+                  "UAV-0",
+                  "UAV-1"
+                ],
+                [
+                  "UAV-0",
+                  "UAV-1"
+                ],
+                [
+                  "UAV-0",
+                  "UAV-1"
+                ],
+                [
+                  "UAV-0",
+                  "UAV-1"
+                ],
+                [
+                  "UAV-0",
+                  "UAV-1"
+                ],
+                [
+                  "UAV-0",
+                  "UAV-1"
+                ],
+                [
+                  "UAV-0",
+                  "UAV-1"
+                ],
+                [
+                  "UAV-0",
+                  "UAV-1"
+                ],
+                [
+                  "UAV-0",
+                  "UAV-1"
+                ],
+                [
+                  "UAV-0",
+                  "UAV-1"
+                ],
+                [
+                  "UAV-0",
+                  "UAV-1"
+                ],
+                [
+                  "UAV-0",
+                  "UAV-1"
+                ]
+              ]
+            },
+            "critical": {
+              "total_count": 0,
+              "pairs": []
+            },
+            "geofence": {
+              "total_count": 0,
+              "counts": [
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            }
+          }
+        },
+        "SAC": {
+          "reward": -193831689.07678866,
+          "steps": 10000,
+          "saliency_mean": 0.0,
+          "saliency_max": 0.0,
+          "mission_stats": [
+            {
+              "id": "UAV-0",
+              "waypoints_reached": 0,
+              "dist_navigating": 200000.0
+            },
+            {
+              "id": "UAV-1",
+              "waypoints_reached": 0,
+              "dist_navigating": 200000.0
+            }
+          ],
+          "safety_violations": {
+            "caution": {
+              "total_count": 0,
+              "pairs": []
+            },
+            "critical": {
+              "total_count": 0,
+              "pairs": []
+            },
+            "geofence": {
+              "total_count": 2,
+              "counts": [
+                1,
+                1,
+                0,
+                0,
+                0
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "mission_index": 5,
+      "timestamp": "2026-03-30T13:06:51.667172+00:00",
+      "origin": [
+        -34.38119743271025,
+        4.128839700941114
+      ],
+      "top_left": [
+        -34.37653315210533,
+        4.122083253107547
+      ],
+      "bottom_right": [
+        -34.38586171331517,
+        4.135596148774681
+      ],
+      "algorithms": {
+        "A2C": {
+          "reward": 277528.09350311756,
+          "steps": 672,
+          "saliency_mean": 0.0,
+          "saliency_max": 0.0,
+          "mission_stats": [
+            {
+              "id": "UAV-0",
+              "waypoints_reached": 20,
+              "dist_navigating": 13440.0
+            },
+            {
+              "id": "UAV-1",
+              "waypoints_reached": 20,
+              "dist_navigating": 9720.0
+            }
+          ],
+          "safety_violations": {
+            "caution": {
+              "total_count": 1,
+              "pairs": [
+                [
+                  "UAV-0",
+                  "UAV-1"
+                ]
+              ]
+            },
+            "critical": {
+              "total_count": 0,
+              "pairs": []
+            },
+            "geofence": {
+              "total_count": 0,
+              "counts": [
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            }
+          }
+        },
+        "PPO": {
+          "reward": 298140.0317323208,
+          "steps": 723,
+          "saliency_mean": 0.0,
+          "saliency_max": 0.0,
+          "mission_stats": [
+            {
+              "id": "UAV-0",
+              "waypoints_reached": 20,
+              "dist_navigating": 14200.0
+            },
+            {
+              "id": "UAV-1",
+              "waypoints_reached": 20,
+              "dist_navigating": 14460.0
+            }
+          ],
+          "safety_violations": {
+            "caution": {
+              "total_count": 1,
+              "pairs": [
+                [
+                  "UAV-0",
+                  "UAV-1"
+                ]
+              ]
+            },
+            "critical": {
+              "total_count": 0,
+              "pairs": []
+            },
+            "geofence": {
+              "total_count": 1,
+              "counts": [
+                0,
+                1,
+                0,
+                0,
+                0
+              ]
+            }
+          }
+        },
+        "SAC": {
+          "reward": -159855443.15534258,
+          "steps": 10000,
+          "saliency_mean": 3.4715645597316325e-05,
+          "saliency_max": 0.00011128195910714567,
+          "mission_stats": [
+            {
+              "id": "UAV-0",
+              "waypoints_reached": 0,
+              "dist_navigating": 200000.0
+            },
+            {
+              "id": "UAV-1",
+              "waypoints_reached": 0,
+              "dist_navigating": 200000.0
+            }
+          ],
+          "safety_violations": {
+            "caution": {
+              "total_count": 0,
+              "pairs": []
+            },
+            "critical": {
+              "total_count": 0,
+              "pairs": []
+            },
+            "geofence": {
+              "total_count": 3,
+              "counts": [
+                1,
+                2,
+                0,
+                0,
+                0
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "mission_index": 6,
+      "timestamp": "2026-03-30T13:07:04.319883+00:00",
+      "origin": [
+        39.67805820541366,
+        -139.68449121326006
+      ],
+      "top_left": [
+        39.68238531546332,
+        -139.68966225714234
+      ],
+      "bottom_right": [
+        39.673731095364005,
+        -139.67932016937777
+      ],
+      "algorithms": {
+        "A2C": {
+          "reward": 239280.81651091576,
+          "steps": 417,
+          "saliency_mean": 0.00017739662143867463,
+          "saliency_max": 0.00017739662143867463,
+          "mission_stats": [
+            {
+              "id": "UAV-0",
+              "waypoints_reached": 20,
+              "dist_navigating": 7840.0
+            },
+            {
+              "id": "UAV-1",
+              "waypoints_reached": 20,
+              "dist_navigating": 8340.0
+            }
+          ],
+          "safety_violations": {
+            "caution": {
+              "total_count": 5,
+              "pairs": [
+                [
+                  "UAV-0",
+                  "UAV-1"
+                ],
+                [
+                  "UAV-0",
+                  "UAV-1"
+                ],
+                [
+                  "UAV-0",
+                  "UAV-1"
+                ],
+                [
+                  "UAV-0",
+                  "UAV-1"
+                ],
+                [
+                  "UAV-0",
+                  "UAV-1"
+                ]
+              ]
+            },
+            "critical": {
+              "total_count": 0,
+              "pairs": []
+            },
+            "geofence": {
+              "total_count": 0,
+              "counts": [
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            }
+          }
+        },
+        "PPO": {
+          "reward": 222542.0124477744,
+          "steps": 563,
+          "saliency_mean": 0.00015402393182739615,
+          "saliency_max": 0.00015402393182739615,
+          "mission_stats": [
+            {
+              "id": "UAV-0",
+              "waypoints_reached": 20,
+              "dist_navigating": 7960.0
+            },
+            {
+              "id": "UAV-1",
+              "waypoints_reached": 20,
+              "dist_navigating": 11260.0
+            }
+          ],
+          "safety_violations": {
+            "caution": {
+              "total_count": 0,
+              "pairs": []
+            },
+            "critical": {
+              "total_count": 0,
+              "pairs": []
+            },
+            "geofence": {
+              "total_count": 0,
+              "counts": [
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            }
+          }
+        },
+        "SAC": {
+          "reward": -194112701.9671402,
+          "steps": 10000,
+          "saliency_mean": 3.619660492404364e-05,
+          "saliency_max": 0.0001224087900482118,
+          "mission_stats": [
+            {
+              "id": "UAV-0",
+              "waypoints_reached": 0,
+              "dist_navigating": 200000.0
+            },
+            {
+              "id": "UAV-1",
+              "waypoints_reached": 0,
+              "dist_navigating": 200000.0
+            }
+          ],
+          "safety_violations": {
+            "caution": {
+              "total_count": 0,
+              "pairs": []
+            },
+            "critical": {
+              "total_count": 0,
+              "pairs": []
+            },
+            "geofence": {
+              "total_count": 2,
+              "counts": [
+                1,
+                1,
+                0,
+                0,
+                0
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "mission_index": 7,
+      "timestamp": "2026-03-30T13:07:16.888046+00:00",
+      "origin": [
+        -30.833050841054323,
+        -124.43251706133486
+      ],
+      "top_left": [
+        -30.826604554801882,
+        -124.44037228703449
+      ],
+      "bottom_right": [
+        -30.839497127306764,
+        -124.42466183563523
+      ],
+      "algorithms": {
+        "A2C": {
+          "reward": 337442.85035705566,
+          "steps": 689,
+          "saliency_mean": 0.0003458852006588131,
+          "saliency_max": 0.0003458852006588131,
+          "mission_stats": [
+            {
+              "id": "UAV-0",
+              "waypoints_reached": 20,
+              "dist_navigating": 13700.0
+            },
+            {
+              "id": "UAV-1",
+              "waypoints_reached": 20,
+              "dist_navigating": 13780.0
+            }
+          ],
+          "safety_violations": {
+            "caution": {
+              "total_count": 7,
+              "pairs": [
+                [
+                  "UAV-0",
+                  "UAV-1"
+                ],
+                [
+                  "UAV-0",
+                  "UAV-1"
+                ],
+                [
+                  "UAV-0",
+                  "UAV-1"
+                ],
+                [
+                  "UAV-0",
+                  "UAV-1"
+                ],
+                [
+                  "UAV-0",
+                  "UAV-1"
+                ],
+                [
+                  "UAV-0",
+                  "UAV-1"
+                ],
+                [
+                  "UAV-0",
+                  "UAV-1"
+                ]
+              ]
+            },
+            "critical": {
+              "total_count": 0,
+              "pairs": []
+            },
+            "geofence": {
+              "total_count": 0,
+              "counts": [
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            }
+          }
+        },
+        "PPO": {
+          "reward": 288900.15101253986,
+          "steps": 1107,
+          "saliency_mean": 0.00014496620860882103,
+          "saliency_max": 0.00014496620860882103,
+          "mission_stats": [
+            {
+              "id": "UAV-0",
+              "waypoints_reached": 20,
+              "dist_navigating": 13920.0
+            },
+            {
+              "id": "UAV-1",
+              "waypoints_reached": 20,
+              "dist_navigating": 22140.0
+            }
+          ],
+          "safety_violations": {
+            "caution": {
+              "total_count": 2,
+              "pairs": [
+                [
+                  "UAV-0",
+                  "UAV-1"
+                ],
+                [
+                  "UAV-0",
+                  "UAV-1"
+                ]
+              ]
+            },
+            "critical": {
+              "total_count": 0,
+              "pairs": []
+            },
+            "geofence": {
+              "total_count": 4,
+              "counts": [
+                0,
+                4,
+                0,
+                0,
+                0
+              ]
+            }
+          }
+        },
+        "SAC": {
+          "reward": -148402448.32463837,
+          "steps": 10000,
+          "saliency_mean": 0.0,
+          "saliency_max": 0.0,
+          "mission_stats": [
+            {
+              "id": "UAV-0",
+              "waypoints_reached": 0,
+              "dist_navigating": 200000.0
+            },
+            {
+              "id": "UAV-1",
+              "waypoints_reached": 0,
+              "dist_navigating": 200000.0
+            }
+          ],
+          "safety_violations": {
+            "caution": {
+              "total_count": 0,
+              "pairs": []
+            },
+            "critical": {
+              "total_count": 0,
+              "pairs": []
+            },
+            "geofence": {
+              "total_count": 3,
+              "counts": [
+                1,
+                2,
+                0,
+                0,
+                0
+              ]
+            }
+          }
+        }
+      }
+    }
+  ],
+  "benchmark": null
+}

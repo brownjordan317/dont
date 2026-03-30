@@ -1,7 +1,7 @@
 import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
-from flight_engine.helpers import Position, FlightMode
+from flight_engine.helpers import Position, FlightMode, wrap_angle
 from flight_engine.trans_coorders import CoordinateTransformer
 
 class MultiUAVEnv(gym.Env):
@@ -17,7 +17,10 @@ class MultiUAVEnv(gym.Env):
         mode='gen_mission', 
         caution_dist=30.0, 
         critical_dist=3.0,
-        inference_mode=False
+        inference_mode=False,
+        reward_config=None,
+        hard_safety_config=None,
+        anti_circling_config=None,
         ):
 
         super().__init__()
@@ -38,6 +41,9 @@ class MultiUAVEnv(gym.Env):
         self.crit_dist_breakers = []
         # When True, reward calculations skipped for faster inference
         self.inference_mode = inference_mode
+        reward_config = reward_config or {}
+        hard_safety_config = hard_safety_config or {}
+        anti_circling_config = anti_circling_config or {}
 
         # ------------------------------------------------------------------ #
         # Reward / penalty coefficients                                       #
@@ -45,36 +51,106 @@ class MultiUAVEnv(gym.Env):
 
         # --- Navigation rewards ---
         # Scale factor for distance-to-waypoint progress reward (delta-dist based)
-        self.reward_progress_scale = 6.0
+        self.reward_progress_scale = float(
+            reward_config.get("progress_scale", 6.0)
+        )
         # Scale factor for best-distance improvement bonus
         # Rewards closing in on the personal best distance to waypoint,
         # preventing circular flight patterns from generating reward.
-        self.reward_best_dist_scale = 3.0
+        self.reward_best_dist_scale = float(
+            reward_config.get("best_dist_scale", 3.0)
+        )
         # Penalty coefficient on squared action magnitude (discourages large turns)
-        self.penalty_control_effort = 0.3
+        self.penalty_control_effort = float(
+            reward_config.get("control_effort_penalty", 0.3)
+        )
         # Flat per-step penalty to encourage mission efficiency
-        self.penalty_timestep = 0.1
+        self.penalty_timestep = float(
+            reward_config.get("timestep_penalty", 0.1)
+        )
 
         # --- Waypoint arrival bonus ---
         # Large sparse reward awarded on waypoint arrival
-        self.reward_waypoint_hit = 3000.0
+        self.reward_waypoint_hit = float(
+            reward_config.get("waypoint_hit_reward", 3000.0)
+        )
 
         # --- Geofence / boundary penalty ---
         # Base coefficient for the exponential geofence penalty.
         # Penalty = penalty_geofence_base * (e^(k * normalised_overshoot) - 1)
         # so it is near-zero just inside the fence but grows steeply outside.
-        self.penalty_geofence_base = 20.0
+        self.penalty_geofence_base = float(
+            reward_config.get("geofence_base_penalty", 20.0)
+        )
         # Steepness of the exponential growth (higher → more aggressive)
-        self.penalty_geofence_k = 1.0
+        self.penalty_geofence_k = float(
+            reward_config.get("geofence_exp_k", 1.0)
+        )
 
         # --- Deconfliction penalties ---
         # Linear penalty for pairs inside the caution radius.
         # Scaled so that touching the caution boundary gives ~0 penalty and
         # closing to zero separation gives ~penalty_caution_max.
-        self.penalty_caution_scale = 8.0
+        self.penalty_caution_scale = float(
+            reward_config.get("caution_scale_penalty", 8.0)
+        )
         # One-shot terminal penalty applied when a critical violation occurs.
         # This is much larger than a per-step value so crashes are catastrophic.
-        self.penalty_crash = 5000.0
+        self.penalty_crash = float(
+            reward_config.get("crash_penalty", 5000.0)
+        )
+        self.penalty_safety_override = float(
+            reward_config.get("safety_override_penalty", 25.0)
+        )
+
+        # --- Hard safety fallback ---
+        self.hard_safety_enabled = bool(
+            hard_safety_config.get("enabled", False)
+        )
+        self.hard_safety_activation_dist = float(
+            hard_safety_config.get(
+                "activation_dist",
+                max(self.critical_dist * 2.0, self.critical_dist + 1.0),
+            )
+        )
+        self.hard_safety_release_dist = float(
+            hard_safety_config.get(
+                "release_dist",
+                self.hard_safety_activation_dist,
+            )
+        )
+        self.hard_safety_hold_steps = int(
+            hard_safety_config.get("hold_steps", 0)
+        )
+        self.hard_safety_turn_strength = float(
+            hard_safety_config.get("turn_strength", 1.0)
+        )
+        self.hard_safety_require_closing = bool(
+            hard_safety_config.get("require_closing", True)
+        )
+
+        # --- Anti-circling breakout ---
+        self.anti_circling_enabled = bool(
+            anti_circling_config.get("enabled", False)
+        )
+        self.anti_circling_min_progress_m = float(
+            anti_circling_config.get("min_progress_m", 0.5)
+        )
+        self.anti_circling_min_distance_from_wp_m = float(
+            anti_circling_config.get("min_distance_from_wp_m", 25.0)
+        )
+        self.anti_circling_min_turn_input = float(
+            anti_circling_config.get("min_turn_input", 0.35)
+        )
+        self.anti_circling_trigger_steps = int(
+            anti_circling_config.get("trigger_steps", 30)
+        )
+        self.anti_circling_breakout_steps = int(
+            anti_circling_config.get("breakout_steps", 12)
+        )
+        self.anti_circling_turn_strength = float(
+            anti_circling_config.get("turn_strength", 1.0)
+        )
 
         # --- Geofence violation tracking ---
         # counts distinct exit events per UAV, not sustained frames
@@ -87,6 +163,13 @@ class MultiUAVEnv(gym.Env):
 
         # --- Crash flag (set when any critical violation occurs this step) ---
         self._crashed = False
+        self.safety_override_counts = [0 for _ in range(self.max_uavs)]
+        self.anti_circling_counts = [0 for _ in range(self.max_uavs)]
+        self._stalled_turn_steps = np.zeros(self.max_uavs, dtype=np.int32)
+        self._breakout_steps_remaining = np.zeros(self.max_uavs, dtype=np.int32)
+        self._steps_since_best_progress = np.zeros(self.max_uavs, dtype=np.int32)
+        self._safety_turn_memory = np.zeros(self.max_uavs, dtype=np.float32)
+        self._safety_hold_remaining = np.zeros(self.max_uavs, dtype=np.int32)
 
         self.update_bounds(tl, br)
         # Number of observation features per UAV:
@@ -133,7 +216,9 @@ class MultiUAVEnv(gym.Env):
     def step(self, actions):
         self.current_step += 1
         n = len(self.aircraft_list)
-        actions = np.asarray(actions)[:n]
+        actions = np.asarray(actions, dtype=np.float32)[:n]
+        applied_actions = np.clip(actions.copy(), -1.0, 1.0)
+        policy_actions = applied_actions.copy()
 
         # Skip reward calculations in inference mode
         if self.inference_mode:
@@ -151,13 +236,20 @@ class MultiUAVEnv(gym.Env):
         self._prev_local_cache[:n, 0] = x_vals
         self._prev_local_cache[:n, 1] = y_vals
         self._update_waypoint_local_cache(self._prev_local_cache)
+        self._update_pairwise_distance_cache(self._prev_local_cache)
 
         # Distance-to-waypoint BEFORE physics (for progress reward)
-        if not self.inference_mode:
-            dist_before = np.linalg.norm(
-                self._wp_local_cache[:n] - self._prev_local_cache[:n],
-                axis=1
-            )
+        dist_before = np.linalg.norm(
+            self._wp_local_cache[:n] - self._prev_local_cache[:n],
+            axis=1
+        )
+        best_dist_before = self._best_dist_to_wp.copy()
+
+        anti_circling_activated = self._apply_anti_circling_breakout(
+            applied_actions,
+            dist_before,
+        )
+        safety_activated = self._apply_hard_safety_turns(applied_actions)
 
         # --- 2. Physics update ---
         for i, ac in enumerate(self.aircraft_list):
@@ -168,7 +260,7 @@ class MultiUAVEnv(gym.Env):
                 )
             else:
                 ac.update_simple(
-                    actions[i] * ac.dynamics.max_turn_rate,
+                    applied_actions[i] * ac.dynamics.max_turn_rate,
                     self.dt,
                     self.transformer
                 )
@@ -191,11 +283,10 @@ class MultiUAVEnv(gym.Env):
                 self._calculate_collision_rewards(rewards)
 
         # --- 5. Nav Rewards & Waypoint Management ---
-        if not self.inference_mode:
-            dist_after = np.linalg.norm(
-                self._wp_local_cache[:n] - self._local_pos_cache[:n],
-                axis=1
-            )
+        dist_after = np.linalg.norm(
+            self._wp_local_cache[:n] - self._local_pos_cache[:n],
+            axis=1
+        )
 
         for i, ac in enumerate(self.aircraft_list):
             if not self.inference_mode:
@@ -222,8 +313,10 @@ class MultiUAVEnv(gym.Env):
                 # ----------------------------------------------------------
                 # 5c. Control effort & timestep penalties
                 # ----------------------------------------------------------
-                rewards[i] -= self.penalty_control_effort * (actions[i] ** 2)
+                rewards[i] -= self.penalty_control_effort * (applied_actions[i] ** 2)
                 rewards[i] -= self.penalty_timestep
+                if safety_activated[i]:
+                    rewards[i] -= self.penalty_safety_override
 
             # --- Waypoint arrival ---
             wm = ac.waypoint_manager
@@ -241,6 +334,9 @@ class MultiUAVEnv(gym.Env):
                     wm.hit_waypoints.append(reached_waypoint)
                     # Reset personal best for the NEW waypoint
                     self._best_dist_to_wp[i] = np.inf
+                    self._stalled_turn_steps[i] = 0
+                    self._breakout_steps_remaining[i] = 0
+                    self._steps_since_best_progress[i] = 0
 
                 if not wm.has_waypoints():
                     ac._enter_loiter()
@@ -292,6 +388,13 @@ class MultiUAVEnv(gym.Env):
                     * np.clip(overshoot_term, 0, 500)) # Clip the exponential growth
                 rewards[i] -= geo_penalty
 
+        self._update_anti_circling_state(
+            policy_actions,
+            best_dist_before,
+            dist_after,
+            anti_circling_activated,
+        )
+
         self._update_waypoint_local_cache(self._local_pos_cache)
         self._prime_best_distance_to_waypoint(self._local_pos_cache)
         self._update_obs_buffer()
@@ -320,6 +423,8 @@ class MultiUAVEnv(gym.Env):
                 for ac in self.aircraft_list
             ),
             "crashed": terminated,
+            "safety_overrides": int(np.sum(safety_activated)),
+            "anti_circling_breakouts": int(np.sum(anti_circling_activated)),
         }
 
         if done:
@@ -445,6 +550,211 @@ class MultiUAVEnv(gym.Env):
             obs_temp[i] = np.concatenate([self_feat, neigh_feat])
 
         self._obs_buffer[:] = obs_temp.flatten()
+
+    def _apply_hard_safety_turns(self, actions):
+        n = len(self.aircraft_list)
+        activated = np.zeros(n, dtype=bool)
+
+        if not self.hard_safety_enabled or n < 2:
+            return activated
+
+        headings = np.array(
+            [ac.heading for ac in self.aircraft_list],
+            dtype=np.float32
+        )
+        speeds = np.array(
+            [ac.dynamics.cruise_speed for ac in self.aircraft_list],
+            dtype=np.float32
+        )
+
+        for i in range(n):
+            closest_dist = np.inf
+            chosen_turn = self._safety_turn_memory[i]
+            keep_latched_turn = self._safety_hold_remaining[i] > 0
+
+            for j in range(n):
+                if i == j:
+                    continue
+
+                dx = self._prev_local_cache[j, 0] - self._prev_local_cache[i, 0]
+                dy = self._prev_local_cache[j, 1] - self._prev_local_cache[i, 1]
+                dist = np.hypot(dx, dy)
+
+                if dist >= self.hard_safety_activation_dist:
+                    if (
+                        self._safety_hold_remaining[i] > 0
+                        and dist < self.hard_safety_release_dist
+                    ):
+                        keep_latched_turn = True
+                    continue
+
+                v1_x = speeds[i] * np.sin(headings[i])
+                v1_y = speeds[i] * np.cos(headings[i])
+                v2_x = speeds[j] * np.sin(headings[j])
+                v2_y = speeds[j] * np.cos(headings[j])
+                # Positive means the pair is closing along the current
+                # line-of-sight from UAV i toward UAV j.
+                v_closing = (
+                    ((v1_x - v2_x) * dx)
+                    + ((v1_y - v2_y) * dy)
+                ) / (dist + 1e-6)
+
+                if self.hard_safety_require_closing and v_closing <= 0:
+                    continue
+
+                rel_brg = (
+                    (np.arctan2(dx, dy) - headings[i] + np.pi) % (2 * np.pi)
+                ) - np.pi
+                if abs(rel_brg) < (np.pi / 6.0):
+                    # Head-on or nearly head-on: use a consistent starboard pass.
+                    turn_sign = 1.0
+                else:
+                    # Otherwise, turn away from the intruder's side.
+                    turn_sign = -np.sign(rel_brg)
+                    if turn_sign == 0:
+                        turn_sign = 1.0
+
+                escape_bearing = wrap_angle(
+                    headings[i] + (turn_sign * (np.pi / 2.0))
+                )
+                turn_cmd = self._bearing_to_normalized_action(
+                    headings[i],
+                    escape_bearing,
+                    self.aircraft_list[i].dynamics.max_turn_rate,
+                )
+
+                if dist < closest_dist:
+                    closest_dist = dist
+                    chosen_turn = turn_cmd * self.hard_safety_turn_strength
+                    keep_latched_turn = True
+
+            if keep_latched_turn:
+                actions[i] = np.clip(chosen_turn, -1.0, 1.0)
+                activated[i] = True
+                self.safety_override_counts[i] += 1
+                self._safety_turn_memory[i] = actions[i]
+                if closest_dist < np.inf:
+                    self._safety_hold_remaining[i] = self.hard_safety_hold_steps
+                elif self._safety_hold_remaining[i] > 0:
+                    self._safety_hold_remaining[i] -= 1
+            else:
+                self._safety_turn_memory[i] = 0.0
+                self._safety_hold_remaining[i] = 0
+
+        return activated
+
+    def _apply_anti_circling_breakout(self, actions, dist_before):
+        n = len(self.aircraft_list)
+        activated = np.zeros(n, dtype=bool)
+
+        if not self.anti_circling_enabled:
+            return activated
+
+        for i, ac in enumerate(self.aircraft_list):
+            if ac.flight_mode == FlightMode.LOITERING:
+                self._stalled_turn_steps[i] = 0
+                self._breakout_steps_remaining[i] = 0
+                continue
+
+            wm = ac.waypoint_manager
+            if wm.current_waypoint is None:
+                self._stalled_turn_steps[i] = 0
+                self._breakout_steps_remaining[i] = 0
+                continue
+
+            if self._breakout_steps_remaining[i] <= 0:
+                continue
+
+            wp_vec = self._wp_local_cache[i] - self._prev_local_cache[i]
+            rel_brg_wp = (
+                (np.arctan2(wp_vec[0], wp_vec[1]) - ac.heading + np.pi)
+                % (2 * np.pi)
+            ) - np.pi
+            wp_bearing = wrap_angle(ac.heading + rel_brg_wp)
+            turn_cmd = self._bearing_to_normalized_action(
+                ac.heading,
+                wp_bearing,
+                ac.dynamics.max_turn_rate,
+            )
+            if abs(turn_cmd) < 0.25:
+                turn_cmd = 0.0
+
+            if dist_before[i] > wm.arrival_threshold:
+                actions[i] = np.clip(
+                    turn_cmd * self.anti_circling_turn_strength,
+                    -1.0,
+                    1.0,
+                )
+                activated[i] = True
+                self._breakout_steps_remaining[i] -= 1
+                self.anti_circling_counts[i] += 1
+            else:
+                self._breakout_steps_remaining[i] = 0
+
+        return activated
+
+    def _update_anti_circling_state(
+        self,
+        policy_actions,
+        best_dist_before,
+        dist_after,
+        anti_circling_activated,
+    ):
+        if not self.anti_circling_enabled:
+            return
+
+        for i, ac in enumerate(self.aircraft_list):
+            wm = ac.waypoint_manager
+
+            if (
+                ac.flight_mode == FlightMode.LOITERING
+                or wm.current_waypoint is None
+                or anti_circling_activated[i]
+            ):
+                if ac.flight_mode == FlightMode.LOITERING or wm.current_waypoint is None:
+                    self._stalled_turn_steps[i] = 0
+                    self._breakout_steps_remaining[i] = 0
+                    self._steps_since_best_progress[i] = 0
+                continue
+
+            is_turning = abs(policy_actions[i]) >= self.anti_circling_min_turn_input
+            is_far_from_wp = (
+                dist_after[i] >= self.anti_circling_min_distance_from_wp_m
+            )
+            best_before = best_dist_before[i]
+            improved_best = (
+                np.isfinite(best_before)
+                and dist_after[i] < (best_before - self.anti_circling_min_progress_m)
+            )
+
+            if improved_best:
+                self._steps_since_best_progress[i] = 0
+                self._stalled_turn_steps[i] = 0
+            else:
+                if is_turning and is_far_from_wp:
+                    self._steps_since_best_progress[i] += 1
+                    self._stalled_turn_steps[i] += 1
+                else:
+                    self._steps_since_best_progress[i] = 0
+                    self._stalled_turn_steps[i] = 0
+
+            if (
+                self._steps_since_best_progress[i] >= self.anti_circling_trigger_steps
+                and self._breakout_steps_remaining[i] <= 0
+            ):
+                self._breakout_steps_remaining[i] = self.anti_circling_breakout_steps
+                self._stalled_turn_steps[i] = 0
+                self._steps_since_best_progress[i] = 0
+
+    def _bearing_to_normalized_action(
+        self,
+        current_heading,
+        target_bearing,
+        max_turn_rate,
+    ):
+        heading_error = wrap_angle(target_bearing - current_heading)
+        max_turn_this_step = max(max_turn_rate * self.dt, 1e-6)
+        return float(np.clip(heading_error / max_turn_this_step, -1.0, 1.0))
 
     # ======================================================================= #
     # COLLISION HELPERS                                                       #
@@ -628,6 +938,13 @@ class MultiUAVEnv(gym.Env):
         self.geofence_exit_counts = [0 for _ in range(self.max_uavs)]
         self._was_outside = [False for _ in range(self.max_uavs)]
         self._best_dist_to_wp[:] = np.inf
+        self.safety_override_counts = [0 for _ in range(self.max_uavs)]
+        self.anti_circling_counts = [0 for _ in range(self.max_uavs)]
+        self._stalled_turn_steps[:] = 0
+        self._breakout_steps_remaining[:] = 0
+        self._steps_since_best_progress[:] = 0
+        self._safety_turn_memory[:] = 0.0
+        self._safety_hold_remaining[:] = 0
 
         # Clear safety logs
         self.caution_dist_breakers = []
@@ -669,6 +986,11 @@ class MultiUAVEnv(gym.Env):
 
             elif self.mode == 'manual_mission':
                 ac.position = ac.initial_pos
+                ac.heading = ac.initial_heading
+                ac.set_flight_dynamics(
+                    ac.base_turning_radius,
+                    ac.base_cruise_speed,
+                )
 
         # Rebuild coordinate caches
         self._sync_local_caches()
@@ -698,6 +1020,14 @@ class MultiUAVEnv(gym.Env):
                 "geofence": {
                     "total_count": sum(self.geofence_exit_counts),
                     "counts": self.geofence_exit_counts
+                },
+                "hard_safety": {
+                    "total_count": sum(self.safety_override_counts),
+                    "counts": self.safety_override_counts
+                },
+                "anti_circling": {
+                    "total_count": sum(self.anti_circling_counts),
+                    "counts": self.anti_circling_counts
                 }
             }
         }

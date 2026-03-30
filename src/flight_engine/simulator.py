@@ -21,6 +21,7 @@ class FixedWingAircraft:
         self.position = Position(initial_position.latitude, initial_position.longitude)
         self.initial_pos = self.position
         self.heading = initial_heading
+        self.initial_heading = initial_heading
         self.color = color
         self.speed_variance = speed_variance
         self.turning_variance = turning_variance
