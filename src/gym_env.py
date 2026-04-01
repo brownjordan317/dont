@@ -1,6 +1,9 @@
+from collections import Counter
+
 import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
+
 from flight_engine.helpers import Position, FlightMode, wrap_angle
 from flight_engine.trans_coorders import CoordinateTransformer
 
@@ -155,6 +158,7 @@ class MultiUAVEnv(gym.Env):
         # --- Geofence violation tracking ---
         # counts distinct exit events per UAV, not sustained frames
         self.geofence_exit_counts = [0 for _ in range(self.max_uavs)]
+        self.geofence_outside_steps = [0 for _ in range(self.max_uavs)]
         self._was_outside = [False for _ in range(self.max_uavs)]
 
         # --- Per-drone personal-best distance to current waypoint ---
@@ -170,6 +174,11 @@ class MultiUAVEnv(gym.Env):
         self._steps_since_best_progress = np.zeros(self.max_uavs, dtype=np.int32)
         self._safety_turn_memory = np.zeros(self.max_uavs, dtype=np.float32)
         self._safety_hold_remaining = np.zeros(self.max_uavs, dtype=np.int32)
+        self._completion_steps = [None for _ in range(self.max_uavs)]
+        self._min_pairwise_distance = np.inf
+        self._min_pairwise_pair = None
+        self._min_pairwise_step = None
+        self._reward_components = self._make_reward_component_store()
 
         self.update_bounds(tl, br)
         # Number of observation features per UAV:
@@ -274,6 +283,7 @@ class MultiUAVEnv(gym.Env):
 
         # --- 4. Collision Detection ---
         self._update_pairwise_distance_cache(self._local_pos_cache)
+        self._update_episode_separation_metrics()
         if n > 1:
             # Track violations for metrics (always)
             self._track_collision_violations()
@@ -294,7 +304,13 @@ class MultiUAVEnv(gym.Env):
                 # 5a. Progress reward: reward closing on the waypoint THIS step
                 # ----------------------------------------------------------
                 delta_dist = dist_before[i] - dist_after[i]
-                rewards[i] += delta_dist * self.reward_progress_scale
+                progress_reward = delta_dist * self.reward_progress_scale
+                rewards[i] += progress_reward
+                self._record_reward_component(
+                    "progress_reward",
+                    i,
+                    progress_reward,
+                )
 
                 # ----------------------------------------------------------
                 # 5b. Best-distance bonus:
@@ -307,16 +323,42 @@ class MultiUAVEnv(gym.Env):
                     self._best_dist_to_wp[i] = dist_after[i]
                 elif dist_after[i] < best_dist:
                     improvement = best_dist - dist_after[i]
-                    rewards[i] += improvement * self.reward_best_dist_scale
+                    best_dist_bonus = improvement * self.reward_best_dist_scale
+                    rewards[i] += best_dist_bonus
+                    self._record_reward_component(
+                        "best_dist_bonus",
+                        i,
+                        best_dist_bonus,
+                    )
                     self._best_dist_to_wp[i] = dist_after[i]
 
                 # ----------------------------------------------------------
                 # 5c. Control effort & timestep penalties
                 # ----------------------------------------------------------
-                rewards[i] -= self.penalty_control_effort * (applied_actions[i] ** 2)
-                rewards[i] -= self.penalty_timestep
+                control_effort_penalty = -self.penalty_control_effort * (applied_actions[i] ** 2)
+                rewards[i] += control_effort_penalty
+                self._record_reward_component(
+                    "control_effort_penalty",
+                    i,
+                    control_effort_penalty,
+                )
+
+                timestep_penalty = -self.penalty_timestep
+                rewards[i] += timestep_penalty
+                self._record_reward_component(
+                    "timestep_penalty",
+                    i,
+                    timestep_penalty,
+                )
+
                 if safety_activated[i]:
-                    rewards[i] -= self.penalty_safety_override
+                    safety_override_penalty = -self.penalty_safety_override
+                    rewards[i] += safety_override_penalty
+                    self._record_reward_component(
+                        "safety_override_penalty",
+                        i,
+                        safety_override_penalty,
+                    )
 
             # --- Waypoint arrival ---
             wm = ac.waypoint_manager
@@ -328,6 +370,11 @@ class MultiUAVEnv(gym.Env):
                     reached_waypoint = wm.current_waypoint
                     if not self.inference_mode:
                         rewards[i] += self.reward_waypoint_hit
+                        self._record_reward_component(
+                            "waypoint_hit_reward",
+                            i,
+                            self.reward_waypoint_hit,
+                        )
                     wm.advance()
                     if self.mode == 'gen_mission':
                         self._refill_mission(ac)
@@ -337,9 +384,6 @@ class MultiUAVEnv(gym.Env):
                     self._stalled_turn_steps[i] = 0
                     self._breakout_steps_remaining[i] = 0
                     self._steps_since_best_progress[i] = 0
-
-                if not wm.has_waypoints():
-                    ac._enter_loiter()
 
             # --- Geofence ---
             inside = (
@@ -351,6 +395,8 @@ class MultiUAVEnv(gym.Env):
             if not inside and not self._was_outside[i]:
                 self.geofence_exit_counts[i] += 1
                 self._was_outside[i] = True
+            if not inside:
+                self.geofence_outside_steps[i] += 1
 
             if inside:
                 self._was_outside[i] = False
@@ -386,7 +432,18 @@ class MultiUAVEnv(gym.Env):
                 geo_penalty = (
                       self.penalty_geofence_base 
                     * np.clip(overshoot_term, 0, 500)) # Clip the exponential growth
-                rewards[i] -= geo_penalty
+                geofence_penalty = -geo_penalty
+                rewards[i] += geofence_penalty
+                self._record_reward_component(
+                    "geofence_penalty",
+                    i,
+                    geofence_penalty,
+                )
+
+            if not wm.has_waypoints():
+                if self._completion_steps[i] is None:
+                    self._completion_steps[i] = self.current_step
+                ac._enter_loiter()
 
         self._update_anti_circling_state(
             policy_actions,
@@ -404,27 +461,38 @@ class MultiUAVEnv(gym.Env):
         # already-applied per-pair penalty stands; the crash flag triggers
         # the `terminated` signal so the agent learns the state is absorbing.
         # ------------------------------------------------------------------
-        terminated = self._crashed
-        truncated  = self.current_step >= self.max_steps
-
         # Also end if all drones have no more waypoints
         all_done = all(
             not ac.waypoint_manager.has_waypoints()
             for ac in self.aircraft_list
         )
-
-        done = terminated or truncated or all_done
+        terminated = self._crashed or all_done
+        truncated  = self.current_step >= self.max_steps
+        done = terminated or truncated
 
         total_reward = float(rewards.sum()) if not self.inference_mode else 0.0
+
+        termination_reason = "in_progress"
+        if self._crashed:
+            termination_reason = "critical_violation"
+        elif all_done:
+            termination_reason = "completed"
+        elif truncated:
+            termination_reason = "max_steps"
 
         info = {
             "waypoints_hit": sum(
                 len(ac.waypoint_manager.hit_waypoints)
                 for ac in self.aircraft_list
             ),
-            "crashed": terminated,
+            "crashed": self._crashed,
+            "terminated": terminated,
+            "truncated": truncated,
+            "all_waypoints_completed": all_done,
+            "termination_reason": termination_reason,
             "safety_overrides": int(np.sum(safety_activated)),
             "anti_circling_breakouts": int(np.sum(anti_circling_activated)),
+            "sim_time_s": float(self.current_step * self.dt),
         }
 
         if done:
@@ -433,10 +501,49 @@ class MultiUAVEnv(gym.Env):
         return (
             self._obs_buffer.copy(),
             total_reward,
-            done,
-            False,
+            terminated,
+            truncated,
             info
         )
+
+    def _make_reward_component_store(self):
+        return {
+            "progress_reward": np.zeros(self.max_uavs, dtype=np.float32),
+            "best_dist_bonus": np.zeros(self.max_uavs, dtype=np.float32),
+            "control_effort_penalty": np.zeros(self.max_uavs, dtype=np.float32),
+            "timestep_penalty": np.zeros(self.max_uavs, dtype=np.float32),
+            "waypoint_hit_reward": np.zeros(self.max_uavs, dtype=np.float32),
+            "geofence_penalty": np.zeros(self.max_uavs, dtype=np.float32),
+            "caution_penalty": np.zeros(self.max_uavs, dtype=np.float32),
+            "crash_penalty": np.zeros(self.max_uavs, dtype=np.float32),
+            "safety_override_penalty": np.zeros(self.max_uavs, dtype=np.float32),
+        }
+
+    def _record_reward_component(self, component_name, indices, values):
+        np.add.at(self._reward_components[component_name], indices, values)
+
+    def _update_episode_separation_metrics(self):
+        n = len(self.aircraft_list)
+        if n < 2:
+            return
+
+        i_idx, j_idx = np.triu_indices(n, k=1)
+        separations = self._dist_matrix[i_idx, j_idx]
+        if separations.size == 0:
+            return
+
+        min_idx = int(np.argmin(separations))
+        min_dist = float(separations[min_idx])
+
+        if min_dist < self._min_pairwise_distance:
+            i = int(i_idx[min_idx])
+            j = int(j_idx[min_idx])
+            self._min_pairwise_distance = min_dist
+            self._min_pairwise_pair = (
+                self.aircraft_list[i].id_tag,
+                self.aircraft_list[j].id_tag,
+            )
+            self._min_pairwise_step = self.current_step
 
     # ======================================================================= #
     # OBSERVATION BUFFER                                                      #
@@ -806,6 +913,16 @@ class MultiUAVEnv(gym.Env):
 
         np.add.at(rewards_list, i_idx, caution_penalties)
         np.add.at(rewards_list, j_idx, caution_penalties)
+        self._record_reward_component(
+            "caution_penalty",
+            i_idx,
+            caution_penalties,
+        )
+        self._record_reward_component(
+            "caution_penalty",
+            j_idx,
+            caution_penalties,
+        )
 
         # --- Critical zone: large terminal penalty (applied once per crash) ---
         critical_mask = sep < self.critical_dist
@@ -817,6 +934,17 @@ class MultiUAVEnv(gym.Env):
                 involved.add(cj)
             for idx in involved:
                 rewards_list[idx] -= self.penalty_crash
+            crash_indices = np.array(sorted(involved), dtype=np.int32)
+            crash_penalties = np.full(
+                crash_indices.shape,
+                -self.penalty_crash,
+                dtype=np.float32,
+            )
+            self._record_reward_component(
+                "crash_penalty",
+                crash_indices,
+                crash_penalties,
+            )
 
     # ======================================================================= #
     # GEOMETRY HELPERS                                                        #
@@ -936,6 +1064,7 @@ class MultiUAVEnv(gym.Env):
         self._crashed = False
 
         self.geofence_exit_counts = [0 for _ in range(self.max_uavs)]
+        self.geofence_outside_steps = [0 for _ in range(self.max_uavs)]
         self._was_outside = [False for _ in range(self.max_uavs)]
         self._best_dist_to_wp[:] = np.inf
         self.safety_override_counts = [0 for _ in range(self.max_uavs)]
@@ -945,6 +1074,11 @@ class MultiUAVEnv(gym.Env):
         self._steps_since_best_progress[:] = 0
         self._safety_turn_memory[:] = 0.0
         self._safety_hold_remaining[:] = 0
+        self._completion_steps = [None for _ in range(self.max_uavs)]
+        self._min_pairwise_distance = np.inf
+        self._min_pairwise_pair = None
+        self._min_pairwise_step = None
+        self._reward_components = self._make_reward_component_store()
 
         # Clear safety logs
         self.caution_dist_breakers = []
@@ -994,6 +1128,7 @@ class MultiUAVEnv(gym.Env):
 
         # Rebuild coordinate caches
         self._sync_local_caches()
+        self._update_episode_separation_metrics()
         self._prime_best_distance_to_waypoint(self._local_pos_cache)
         self._update_obs_buffer()
 
@@ -1005,21 +1140,91 @@ class MultiUAVEnv(gym.Env):
 
     def get_uav_metrics(self):
         """Returns comprehensive telemetry and mission progress for all UAVs."""
+        n = len(self.aircraft_list)
+
+        def summarize_pairs(pairs):
+            counts = Counter(tuple(sorted(pair)) for pair in pairs)
+            return [
+                {
+                    "pair": list(pair),
+                    "count": count,
+                }
+                for pair, count in sorted(counts.items())
+            ]
+
+        reward_totals = {
+            name: float(values[:n].sum())
+            for name, values in self._reward_components.items()
+        }
+        reward_net_total = float(sum(reward_totals.values()))
+
         metrics = {
             "telemetry": [],
             "mission_stats": [],
+            "episode_summary": {
+                "steps": int(self.current_step),
+                "sim_time_s": float(self.current_step * self.dt),
+                "termination_reason": (
+                    "critical_violation"
+                    if self._crashed
+                    else "completed"
+                    if all(
+                        not ac.waypoint_manager.has_waypoints()
+                        for ac in self.aircraft_list
+                    )
+                    else "max_steps"
+                    if self.current_step >= self.max_steps
+                    else "in_progress"
+                ),
+                "uavs_completed": int(
+                    sum(
+                        1
+                        for step in self._completion_steps[:n]
+                        if step is not None
+                    )
+                ),
+                "all_waypoints_completed": all(
+                    not ac.waypoint_manager.has_waypoints()
+                    for ac in self.aircraft_list
+                ),
+                "min_pairwise_distance_m": (
+                    float(self._min_pairwise_distance)
+                    if self._min_pairwise_pair is not None
+                    else None
+                ),
+                "min_pairwise_pair": (
+                    list(self._min_pairwise_pair)
+                    if self._min_pairwise_pair is not None
+                    else None
+                ),
+                "min_pairwise_step": self._min_pairwise_step,
+                "min_pairwise_time_s": (
+                    float(self._min_pairwise_step * self.dt)
+                    if self._min_pairwise_step is not None
+                    else None
+                ),
+            },
+            "reward_breakdown": {
+                "totals": reward_totals,
+                "net_total": reward_net_total,
+                "per_uav": [],
+            },
             "safety_violations": {
                 "caution": {
                     "total_count": len(self.caution_dist_breakers),
-                    "pairs": self.caution_dist_breakers
+                    "pairs": self.caution_dist_breakers,
+                    "pair_counts": summarize_pairs(self.caution_dist_breakers),
                 },
                 "critical": {
                     "total_count": len(self.crit_dist_breakers),
-                    "pairs": self.crit_dist_breakers
+                    "pairs": self.crit_dist_breakers,
+                    "pair_counts": summarize_pairs(self.crit_dist_breakers),
                 },
                 "geofence": {
                     "total_count": sum(self.geofence_exit_counts),
-                    "counts": self.geofence_exit_counts
+                    "counts": self.geofence_exit_counts,
+                    "outside_step_total": int(sum(self.geofence_outside_steps)),
+                    "outside_step_counts": self.geofence_outside_steps,
                 },
                 "hard_safety": {
                     "total_count": sum(self.safety_override_counts),
@@ -1033,17 +1238,70 @@ class MultiUAVEnv(gym.Env):
         }
 
         for i, ac in enumerate(self.aircraft_list):
+            assigned_waypoints = (
+                len(ac.waypoint_manager.hit_waypoints)
+                + ac.waypoint_manager.queue_size()
+                + (1 if ac.waypoint_manager.current_waypoint else 0)
+            )
+            remaining_waypoints = (
+                ac.waypoint_manager.queue_size()
+                + (1 if ac.waypoint_manager.current_waypoint else 0)
+            )
+            reward_components = {
+                name: float(values[i])
+                for name, values in self._reward_components.items()
+            }
+            reward_total = float(sum(reward_components.values()))
+
             metrics["telemetry"].append({
-                "id":      ac.id_tag,
-                "pos":     (ac.position.latitude, ac.position.longitude),
-                "speed":   ac.dynamics.cruise_speed,
-                "heading": ac.heading,
-                "mode":    ac.flight_mode
+                "id": ac.id_tag,
+                "pos": (ac.position.latitude, ac.position.longitude),
+                "speed": float(ac.dynamics.cruise_speed),
+                "heading": float(ac.heading),
+                "mode": ac.flight_mode.value
             })
             metrics["mission_stats"].append({
-                "id":               ac.id_tag,
+                "id": ac.id_tag,
                 "waypoints_reached": len(ac.waypoint_manager.hit_waypoints),
-                "dist_navigating":  ac.distance_traveled,
+                "assigned_waypoints": int(assigned_waypoints),
+                "waypoints_remaining": int(remaining_waypoints),
+                "completion_rate": (
+                    float(len(ac.waypoint_manager.hit_waypoints) / assigned_waypoints)
+                    if assigned_waypoints
+                    else 1.0
+                ),
+                "completed_mission": remaining_waypoints == 0,
+                "completion_step": self._completion_steps[i],
+                "completion_time_s": (
+                    float(self._completion_steps[i] * self.dt)
+                    if self._completion_steps[i] is not None
+                    else None
+                ),
+                "dist_navigating": float(ac.distance_traveled),
+                "dist_per_waypoint_m": (
+                    float(ac.distance_traveled / len(ac.waypoint_manager.hit_waypoints))
+                    if ac.waypoint_manager.hit_waypoints
+                    else None
+                ),
+                "initial_position": (
+                    ac.initial_pos.latitude,
+                    ac.initial_pos.longitude,
+                ),
+                "final_position": (
+                    ac.position.latitude,
+                    ac.position.longitude,
+                ),
+                "initial_heading": float(ac.initial_heading),
+                "final_heading": float(ac.heading),
+                "cruise_speed_mps": float(ac.dynamics.cruise_speed),
+                "turning_radius_m": float(ac.dynamics.turning_radius),
+                "reward_total": reward_total,
+                "reward_breakdown": reward_components,
+            })
+            metrics["reward_breakdown"]["per_uav"].append({
+                "id": ac.id_tag,
+                "net_total": reward_total,
+                "components": reward_components,
             })
 
         return metrics

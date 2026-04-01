@@ -165,19 +165,17 @@ def run_light_episode(model, env, max_steps, model_cls):
             
             progress.update(task, advance=1)
         
-        if not done:
-            truncated = True
-        else:
-            truncated = False
-
     if episode_metrics is None:
         episode_metrics = base_env.get_uav_metrics()
+
+    terminated = bool(info.get("terminated", done and not info.get("truncated", False)))
+    truncated = bool(info.get("truncated", not done and step_count >= max_steps))
     
     return (
         step_count,
         total_reward,
         info.get('waypoints_hit', 0),
-        done,
+        terminated,
         truncated,
         episode_metrics,
     )

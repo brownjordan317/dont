@@ -7,9 +7,11 @@ eval_models:
     model_path: "models_ppo_2/ppo_uav_curriculum.zip"
     device: "cuda"
 
-  SAC:
-    model_path: "models_sac_2/sac_uav_curriculum_interrupted.zip"
-    device: "cuda" # cuda for sac only
+  # SAC was constantly only failing so not included in the evaluation, but 
+  # the config is here for future use if needed
+  # SAC:
+  #   model_path: "models_sac_2/sac_uav_curriculum_interrupted.zip"
+  #   device: "cuda" # cuda for sac only
 
 eval:
   num_missions: 100
