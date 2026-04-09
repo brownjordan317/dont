@@ -1,0 +1,109 @@
+heatmap:
+  image_path: resized.png
+  source_image_ppm: 0.5
+  resolution: 1.0
+  # Percentage points of normalized heat removed per 100 ms of continuous
+  # camera coverage. 100 clears immediately, 1 takes about 10 seconds of
+  # repeated observation to fully remove a max-value cell.
+  search_decay_percent_per_100ms: 100.0
+
+geo_reference:
+  # These corners are derived from the current image centroid and its 2000 m x
+  # 2000 m footprint after the configured resize. Replace them with surveyed
+  # corner coordinates when you have them for more accurate export.
+  tl:
+    lat: 47.92830697389202
+    lon: -97.1052720857056
+  tr:
+    lat: 47.92830697389202
+    lon: -97.07851323120872
+  br:
+    lat: 47.91031953734
+    lon: -97.07851323120872
+  bl:
+    lat: 47.91031953734
+    lon: -97.1052720857056
+  centroid_lat: 47.91931325561601
+  centroid_lon: -97.09189265845716
+
+camera:
+  # Camera altitude above ground in meters.
+  agl: 126.0
+  pitch: -50.0
+  yaw: 0.0
+  min_pitch: -90.0
+  max_pitch: -50.0
+  min_yaw: -90.0
+  max_yaw: 90.0
+  # Camera slew-rate limits in degrees per second.
+  pitch_turn_rate_deg: 15.0
+  yaw_turn_rate_deg: 25.0
+  matrix:
+    - [12285.0, 0.0, 4624.0]
+    - [0.0, 12285.0, 3472.0]
+    - [0.0, 0.0, 1.0]
+
+planner:
+  num_searchers: 4
+  cluster_size: 40
+  top_k_clusters: 3
+  camera_reach_steps: 3
+  # When enabled, the planner can publish a short-horizon intermediate waypoint
+  # that greedily pulls the drone through value on the way to the main hotspot.
+  greedy_paths_enabled: true
+  # Optional explicit drone IDs. When set, provide the full list and make it
+  # match num_searchers.
+  drone_ids: [drone_0, drone_1, drone_2, drone_3]
+  # Optional explicit starting positions. When set, provide the full list.
+  # Omit this block to keep the default centered-circle spawn pattern. Each
+  # entry may use either e/n or lat/lon and may also include an optional
+  # heading in degrees.
+  # initial_drone_positions:
+  #   - {e: 920.0, n: 1000.0, heading: 0.0}
+  #   - {e: 1000.0, n: 1080.0, heading: 90.0}
+  #   - {lat: 47.9189, lon: -97.0924, heading: 180.0}
+  #   - {lat: 47.9197, lon: -97.0914, heading: 270.0}
+  # One shared value or one value per drone. These are the initial drone AGLs
+  # used by the controller and camera projection model, in meters.
+  initial_altitudes_agl: [125.0, 120.0, 115.0, 110.0]
+  # Treat part of the camera footprint span as already useful search reach when
+  # comparing waypoint travel cost. Higher values make drones favor closer work.
+  target_radius_percent: 0.15
+  # Drone speed in meters per second.
+  drone_speed: 20.0
+  # Duration of one internal planner/simulator step in seconds.
+  step_seconds: 0.1
+  # Drone heading turn-rate limit in degrees per second.
+  max_turn_rate_deg: 12.0
+  # Extra fraction of the turn radius added as safety when building the inner
+  # navigation boundary. 0.01 means "turn radius + 1%".
+  boundary_margin_fraction: 0.01
+  # Floating-point tolerance used to snap drones back onto the navigation
+  # boundary and avoid recovery deadlocks right on the edge.
+  navigation_tolerance_m: 0.0001
+
+display:
+  figure_size: [6.0, 6.0]
+  # When true, the visualizer advances one planner step per
+  # `planner.step_seconds` of wall-clock time and uses `interval_ms` only as
+  # the redraw cadence for smoother playback.
+  sync_to_runtime: true
+  # Lower values make motion look smoother without changing simulated speed.
+  interval_ms: 16
+  footprint_color: "#7ec8e3"
+  footprint_alpha: 0.30
+  target_color: "#00ff9f"
+  drone_color: "#ff4d4d"
+  background_color: "#0d0d1a"
+  colormap:
+    - "#0d0d1a"
+    - "#1a1a4e"
+    - "#2e4481"
+    - "#d05c34"
+    - "#f0a830"
+    - "#fdf6b0"
+
+export:
+  # When true, export commands that write JSON outputs also write a replay
+  # video unless a CLI or API override disables it.
+  save_video: true
