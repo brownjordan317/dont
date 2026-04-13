@@ -1,21 +1,19 @@
-# Testing options
 test:
-  algorithm: "A2C" # SAC | PPO | A2C
-  device: "cpu" # cpu | cuda
-  model_path: "models_a2c_3/a2c_uav_curriculum.zip" # The path to the trained model to test
-  test_name: "A2C_3"
+  device: "cpu"
+  model_path: "models_mappo/mappo_uav_policy_latest.pt"
+  test_name: "MAPPO"
+  mission_mode: "gen_mission"
   save_dir: "reports"
-  save_visuals: True # Set to false to skip saving visuals
-  inference_mode: false # Set to true to run in inference mode
+  save_visuals: true
+  create_video: true
+  deterministic: true
+  video_fps: 30
+  video_speed: 3
 
-  # Video settings (NEW)
-  save_visuals: false      # Set to false to skip video creation
-  video_fps: 30           # Frames per second (24-60)
-  video_speed: 3          # Speed multiplier (1=real-time, 3=3x speed)
+  gen_mission:
+    num_drones: 2
+    num_waypoints: 20
 
-  # Shared environment tuning is defined in config/tuning_config.yaml
-  # Mission-specific `cruise_speed` values are in meters/second.
-  # Mission-specific `turning_radius` values are in meters.
   missions:
     "UAV-1":
       initial_position: [37.7749, -122.4194]
@@ -34,12 +32,3 @@ test:
       waypoints:
         - - 37.774814
           - -122.414403
-
-    # "UAV-3":
-    #   initial_position: [37.7745, -122.4190]
-    #   initial_heading: 270
-    #   cruise_speed: 20
-    #   turning_radius: 30
-    #   waypoints:
-    #     - - 37.774814
-    #       - -122.414403

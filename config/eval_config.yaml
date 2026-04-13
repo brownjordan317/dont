@@ -1,25 +1,11 @@
-eval_models:
-  A2C:
-    model_path: "models_a2c_2/a2c_uav_curriculum.zip"
-    device: "cuda"
-
-  PPO:
-    model_path: "models_ppo_2/ppo_uav_curriculum.zip"
-    device: "cuda"
-
-  # SAC was constantly only failing so not included in the evaluation, but 
-  # the config is here for future use if needed
-  # SAC:
-  #   model_path: "models_sac_2/sac_uav_curriculum_interrupted.zip"
-  #   device: "cuda" # cuda for sac only
-
 eval:
+  model_path: "models_mappo/mappo_uav_policy_latest.pt"
+  device: "cpu"
   num_missions: 100
+  deterministic: true
 
 output:
   results_path: "results/eval_results.json"
-
-env: {}
 
 drone_settings:
   num_drones: 2

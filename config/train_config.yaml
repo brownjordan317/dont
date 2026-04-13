@@ -1,81 +1,54 @@
-# Training options
 train:
+  model_name: "mappo_uav_policy"
+  latest_model_name: "mappo_uav_policy_latest.pt"
+  save_dir: "./models_mappo"
+  device: "cpu"
+  torch_num_threads: 4
+  seed: 7
 
-  # ------------------------------------------
-  # Stable Baselines3 hyperparameters
-  # ------------------------------------------
-  algorithm: "a2c"                    # SAC | PPO | A2C
-  model_name: "a2c_uav_curriculum"    # Used for tensorboard log name and final save filename
-  save_dir: "./models_a2c_3/"
-  tensorboard_log: "./training_logs/"
-  verbose: 0
-  device: "cpu" # use the cpu for PPO and A2C, and the GPU (cuda) for SAC
+  total_timesteps: 3_000_000
+  num_envs: 32
+  rollout_steps: 1024
+  update_epochs: 2
+  minibatch_size: 4096
+  checkpoint_interval: 300_000
+  latest_checkpoint_interval: 100_000
+  save_latest_checkpoint: true
+  log_interval_updates: 5
 
-  # SAC hyperparameters (ignored for PPO/A2C)
-  buffer_size: 1_000_000
-  learning_starts: 10_000
-  tau: 0.005
-  ent_coef: "auto"
-  target_update_interval: 1
-  train_freq: 1
-  gradient_steps: 1
-  buffer_clear_fraction: 0.5    # Fraction of replay buffer cleared at phase transitions
+  learning_rate: 2e-5
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_ratio: 0.05
+  value_clip: 0.2
+  entropy_coef: 0.0002
+  value_loss_coef: 0.5
+  max_grad_norm: 0.1
+  target_kl: 0.005
+  reference_tracking_coef: 0.4
+  reference_tracking_delta: 0.1
+  reference_warmstart_min_steps: 5_000
+  reference_warmstart_max_steps: 300_000
+  reference_warmstart_num_envs: 16
+  reference_warmstart_learning_rate: 3e-4
+  reference_warmstart_delta: 0.1
+  reference_warmstart_target_mae: 0.025
+  reference_warmstart_target_loss: 0.015
+  reference_warmstart_convergence_updates: 100
+  reference_warmstart_log_std: -2.5
+  reference_warmstart_log_interval: 10_000
 
-  # PPO hyperparameters (ignored for SAC/A2C)
-  n_epochs: 10       # How many times to reuse each rollout
-  gae_lambda: 0.95    # GAE smoothing factor
-  clip_range: 0.2      # PPO clipping parameter
+  actor_hidden_sizes: [256, 256]
+  critic_hidden_sizes: [256, 256]
+  log_std_init: -0.8
+  obs_clip: 10.0
+  state_clip: 10.0
 
-  # ------------------------------------------
-  # Shared hyperparameters (SAC + PPO + A2C)
-  # ------------------------------------------
-  learning_rate: 3e-4
-  batch_size: 256     # Note: PPO requires batch_size to divide n_steps evenly
-  gamma: 0.95
-  ent_coef: 0.01   # Ignored by SAC (uses ent_coef above instead)
-  vf_coef: 0.25   # Value function loss weight (PPO + A2C only)
-  max_grad_norm: 0.5  # Gradient clipping (PPO + A2C only)
-  n_steps: 1024  # Rollout length (PPO + A2C only)
-  policy_kwargs:
-    net_arch: [512, 512]
-
-  # ------------------------------------------
-  # Flight Simulator
-  # ------------------------------------------
-  # Shared environment and flight tuning is defined in config/tuning_config.yaml
-
-  # ------------------------------------------
-  # Curriculum
-  # ------------------------------------------
-  total_timesteps: 10_000_000 # The total number of timesteps to train for
-  change_frequency: 20_000 # The number of timesteps to wait before changing the environment
-  curriculum: # The curriculum for training the agent
-    # must start at 0.00
-    0.00: # Percentage into training when this environment should be used
-      min_box_size: 300 # The minimum box size for this environment in meters
-      max_box_size: 300 # The maximum box size for this environment in meters
-      num_drones: 1 # The number of drones for this environment
-    0.10:
-      min_box_size: 300
-      max_box_size: 500
-      num_drones: 1
-    0.20:
-      min_box_size: 500
-      max_box_size: 600
-      num_drones: 2
-    0.35:
-      min_box_size: 500
-      max_box_size: 800
-      num_drones: 2
-    0.50:
-      min_box_size: 600
-      max_box_size: 1000
-      num_drones: 3
-    0.65:
-      min_box_size: 600
-      max_box_size: 1200
-      num_drones: 4
-    0.80:
-      min_box_size: 800
-      max_box_size: 1500
-      num_drones: 5
+  tensorboard:
+    enabled: true
+    log_dir: "./models_mappo/tensorboard/mappo_uav_policy"
+    separate_runs: true
+    flush_secs: 30
+    episode_metrics_interval: 5
+    episode_detail_interval: 20
+    train_metrics_interval_updates: 5

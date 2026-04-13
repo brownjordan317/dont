@@ -1,22 +1,22 @@
+from __future__ import annotations
+
+from collections import Counter
+from datetime import datetime, timezone
 import json
 import os
-import numpy as np
-import copy
-from datetime import datetime, timezone
+
 from geopy.distance import distance as geopy_distance
-
-from test import run_light_episode
-from flight_engine.simulator import FixedWingAircraft
-from flight_engine.helpers import Position
-from gym_env import MultiUAVEnv
-from config_utils import get_tuning_section
-from vec_env_utils import make_eval_env, unwrap_env
-
-from stable_baselines3 import A2C, PPO, SAC
-
+import numpy as np
 from rich.console import Console
-from rich.table import Table
 from rich.panel import Panel
+from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
+from rich.table import Table
+
+from config_utils import get_tuning_section
+from mappo import MAPPOPolicy
+from mappo_runtime import validate_policy_env
+from pettingzoo_env import MultiUAVParallelEnv
+from test import resolve_device, run_light_episode
 
 console = Console()
 
@@ -27,8 +27,8 @@ def route_distance_m(start, waypoints):
         return 0.0
 
     total = 0.0
-    for a, b in zip(points, points[1:]):
-        total += geopy_distance(a, b).meters
+    for point_a, point_b in zip(points, points[1:]):
+        total += geopy_distance(point_a, point_b).meters
     return float(total)
 
 
@@ -47,54 +47,16 @@ def box_dimensions_m(top_left, bottom_right):
         (top_left[0], mid_lon),
         (bottom_right[0], mid_lon),
     ).meters
-
     return float(width_m), float(height_m)
 
 
-# -------------------------------------------------------
-# Universal Saliency (works with A2C / PPO / SAC)
-# -------------------------------------------------------
-
-class SaliencyAnalyzer:
-    """
-    Model-agnostic saliency using observation perturbation.
-    Works with any SB3 policy without accessing logits.
-    """
-
-    def __init__(self, model, epsilon=1e-3):
-        self.model = model
-        self.epsilon = epsilon
-
-    def compute_saliency(self, obs):
-        obs = obs.copy()
-        base_action, _ = self.model.predict(obs, deterministic=True)
-
-        saliency = np.zeros_like(obs, dtype=np.float32)
-
-        for i in range(obs.shape[-1]):
-            obs_perturbed = obs.copy()
-            obs_perturbed[0, i] += self.epsilon
-
-            action2, _ = self.model.predict(obs_perturbed, deterministic=True)
-
-            saliency[0, i] = np.linalg.norm(action2 - base_action)
-
-        return saliency
-
-
-# -------------------------------------------------------
-# Results Writer
-# -------------------------------------------------------
-
 class ResultsWriter:
-
     def __init__(self, path: str, config: dict):
         self.path = path
         os.makedirs(os.path.dirname(path) if os.path.dirname(path) else ".", exist_ok=True)
-
-        self._data = {
+        self.data = {
             "meta": {
-                "schema_version": 2,
+                "schema_version": 3,
                 "started_at": datetime.now(timezone.utc).isoformat(),
                 "config": config,
             },
@@ -103,181 +65,51 @@ class ResultsWriter:
         }
         self._flush()
 
-    def append_mission(
-        self,
-        mission_index: int,
-        mission_definition: dict,
-        metrics: dict,
-        history: dict,
-    ):
-
-        record = {
-            "mission_index": mission_index,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "origin": mission_definition.get("origin"),
-            "top_left": mission_definition.get("top_left"),
-            "bottom_right": mission_definition.get("bottom_right"),
-            "mission": mission_definition,
-            "algorithms": {},
-        }
-
-        for alg_name, m in metrics.items():
-            record["algorithms"][alg_name] = {
-                "policy": m.get("policy", {}),
-                "reward": m["reward"],
-                "steps": m["steps"],
-                "duration_s": m.get("duration_s", 0),
-                "reward_per_step": m.get("reward_per_step", 0),
-                "done": m.get("done", False),
-                "truncated": m.get("truncated", False),
-                "termination_reason": m.get("termination_reason"),
-                "completed_mission": m.get("completed_mission", False),
-                "saliency_mean": m.get("saliency_mean", 0),
-                "saliency_max": m.get("saliency_max", 0),
-                "saliency": m.get("saliency", {}),
-                "summary": m.get("summary", {}),
-                "telemetry": m.get("telemetry", []),
-                "mission_stats": m.get("mission_stats", []),
-                "episode_summary": m.get("episode_summary", {}),
-                "reward_breakdown": m.get("reward_breakdown", {}),
-                "safety_violations": m.get("safety_violations", {}),
-            }
-
-        record["ranking"] = sorted(
-            record["algorithms"].keys(),
-            key=lambda name: record["algorithms"][name]["reward"],
-            reverse=True,
-        )
-        record["winner"] = record["ranking"][0] if record["ranking"] else None
-        self._data["missions"].append(record)
-        self._update_benchmark(history, completed=False)
+    def append_mission(self, record: dict):
+        self.data["missions"].append(record)
         self._flush()
 
-    def write_benchmark(self, history: dict):
-        self._update_benchmark(history, completed=True)
+    def finalize(self, benchmark: dict):
+        self.data["benchmark"] = benchmark
         self._flush()
-        console.print(f"[green]Results saved → {self.path}[/green]")
-
-    def _update_benchmark(self, history: dict, completed: bool):
-        summary = {}
-        now = datetime.now(timezone.utc).isoformat()
-
-        for alg, stats in history.items():
-            if not stats["rewards"]:
-                continue
-
-            rewards = np.asarray(stats["rewards"], dtype=float)
-            steps = np.asarray(stats["steps"], dtype=float)
-            durations = np.asarray(stats["durations_s"], dtype=float)
-            reward_per_step = np.asarray(stats["reward_per_step"], dtype=float)
-            dists = np.asarray(stats["distances"], dtype=float)
-            wps = np.asarray(stats["wps"], dtype=float)
-            caution = np.asarray(stats["caution_counts"], dtype=float)
-            critical = np.asarray(stats["critical_counts"], dtype=float)
-            geofence = np.asarray(stats["geofence_counts"], dtype=float)
-            outside_steps = np.asarray(stats["outside_steps"], dtype=float)
-            hard_safety = np.asarray(stats["hard_safety_counts"], dtype=float)
-            anti_circling = np.asarray(stats["anti_circling_counts"], dtype=float)
-            min_sep = np.asarray(stats["min_pairwise_distances"], dtype=float)
-            saliency = np.asarray(stats["saliency_means"], dtype=float)
-            finite_min_sep = min_sep[np.isfinite(min_sep)]
-
-            summary[alg] = {
-                "mean_reward": float(rewards.mean()),
-                "std_reward": float(rewards.std()),
-                "median_reward": float(np.median(rewards)),
-                "p10_reward": float(np.percentile(rewards, 10)),
-                "p90_reward": float(np.percentile(rewards, 90)),
-                "min_reward": float(rewards.min()),
-                "max_reward": float(rewards.max()),
-                "avg_steps": float(steps.mean()),
-                "avg_duration_s": float(durations.mean()),
-                "avg_dist_m": float(dists.mean()),
-                "avg_reward_per_step": float(reward_per_step.mean()),
-                "wp_completion_rate": float(wps.mean()),
-                "mission_completion_rate": stats["completed"] / len(rewards),
-                "crash_rate": stats["crashes"] / len(rewards),
-                "avg_caution_events": float(caution.mean()),
-                "avg_critical_events": float(critical.mean()),
-                "avg_geofence_exits": float(geofence.mean()),
-                "avg_geofence_outside_steps": float(outside_steps.mean()),
-                "avg_hard_safety_uses": float(hard_safety.mean()),
-                "avg_anti_circling_uses": float(anti_circling.mean()),
-                "avg_min_pairwise_distance_m": (
-                    float(finite_min_sep.mean()) if finite_min_sep.size else None
-                ),
-                "avg_saliency_mean": float(saliency.mean()),
-                "status_counts": {
-                    "completed": int(stats["completed"]),
-                    "critical_violation": int(stats["crashes"]),
-                    "max_steps": int(stats["max_steps"]),
-                },
-                "num_missions": len(rewards),
-            }
-
-        self._data["benchmark"] = {
-            "status": "completed" if completed else "running",
-            "last_updated_at": now,
-            "completed_at": now if completed else None,
-            "algorithms": summary,
-            "ranking": sorted(summary.keys(), key=lambda a: summary[a]["mean_reward"], reverse=True),
-        }
+        console.print(f"[green]Results saved -> {self.path}[/green]")
 
     def _flush(self):
-        tmp = self.path + ".tmp"
-        with open(tmp, "w") as f:
-            json.dump(self._data, f, indent=2)
-        os.replace(tmp, self.path)
+        tmp_path = self.path + ".tmp"
+        with open(tmp_path, "w") as handle:
+            json.dump(self.data, handle, indent=2)
+        os.replace(tmp_path, self.path)
 
 
-# -------------------------------------------------------
-# Evaluator
-# -------------------------------------------------------
+def ordered_waypoints(aircraft) -> list:
+    waypoints = []
+    current_waypoint = aircraft.waypoint_manager.current_waypoint
+    if current_waypoint is not None:
+        waypoints.append(current_waypoint.to_tuple())
+    waypoints.extend(
+        waypoint.to_tuple()
+        for waypoint in aircraft.waypoint_manager.waypoint_queue
+    )
+    return waypoints
 
-class Evaluator:
 
-    def __init__(self, config):
-        if "seed" in config["env"]:
-            np.random.seed(config["env"]["seed"])
+def build_mission_definition(env: MultiUAVParallelEnv, config: dict) -> dict:
+    top_left = (env.max_lat, env.min_lon)
+    bottom_right = (env.min_lat, env.max_lon)
+    width_m, height_m = box_dimensions_m(top_left, bottom_right)
+    uav_records = []
+    total_planned_distance = 0.0
 
-        self.metrics = {}
-        self.history = {}
-
-        self.mission = {
-            "config": config,
-            "uavs": None,
-            "definition": None,
-        }
-
-        results_path = config.get("output", {}).get("results_path", "results/eval_results.json")
-        self.writer = ResultsWriter(results_path, config)
-
-    def _ordered_waypoints(self, aircraft):
-        waypoints = []
-        current_wp = aircraft.waypoint_manager.current_waypoint
-        if current_wp is not None:
-            waypoints.append(current_wp.to_tuple())
-        waypoints.extend(wp.to_tuple() for wp in aircraft.waypoint_manager.waypoint_queue)
-        return waypoints
-
-    def _build_mission_definition(self):
-        origin = self.mission["config"]["env"].get("origin")
-        top_left = self.mission["config"]["env"].get("top_left")
-        bottom_right = self.mission["config"]["env"].get("bottom_right")
-        width_m, height_m = box_dimensions_m(top_left, bottom_right)
-
-        uav_records = []
-        total_planned_distance = 0.0
-
-        for aircraft in self.mission["uavs"]:
-            mission_waypoints = self._ordered_waypoints(aircraft)
-            planned_distance = route_distance_m(
-                aircraft.initial_pos.to_tuple(),
-                mission_waypoints,
-            )
-            total_planned_distance += planned_distance
-
-            uav_records.append({
+    for agent in env.agents:
+        aircraft = env.aircraft_by_agent[agent]
+        mission_waypoints = ordered_waypoints(aircraft)
+        planned_distance = route_distance_m(
+            aircraft.initial_pos.to_tuple(),
+            mission_waypoints,
+        )
+        total_planned_distance += planned_distance
+        uav_records.append(
+            {
                 "id": aircraft.id_tag,
                 "initial_position": aircraft.initial_pos.to_tuple(),
                 "initial_heading_rad": float(aircraft.initial_heading),
@@ -286,586 +118,359 @@ class Evaluator:
                 "turning_radius_m": float(aircraft.base_turning_radius),
                 "waypoints": mission_waypoints,
                 "planned_route_distance_m": float(planned_distance),
-            })
-
-        return {
-            "origin": origin,
-            "top_left": top_left,
-            "bottom_right": bottom_right,
-            "box_width_m": float(width_m),
-            "box_height_m": float(height_m),
-            "box_area_km2": float((width_m * height_m) / 1_000_000.0),
-            "num_drones": len(self.mission["uavs"]),
-            "waypoints_per_drone": self.mission["config"]["drone_settings"]["num_wps_per_drone"],
-            "total_waypoints": int(sum(len(record["waypoints"]) for record in uav_records)),
-            "planned_route_distance_m_total": float(total_planned_distance),
-            "planned_route_distance_m_avg": (
-                float(total_planned_distance / len(uav_records))
-                if uav_records
-                else 0.0
-            ),
-            "uavs": uav_records,
-        }
-
-    def _summarize_saliency(self, saliency_values):
-        values = np.asarray(saliency_values, dtype=float)
-        if values.size == 0:
-            return {
-                "num_samples": 0,
-                "mean": 0.0,
-                "std": 0.0,
-                "min": 0.0,
-                "median": 0.0,
-                "p95": 0.0,
-                "max": 0.0,
-                "samples": [],
             }
-
-        return {
-            "num_samples": int(values.size),
-            "mean": float(values.mean()),
-            "std": float(values.std()),
-            "min": float(values.min()),
-            "median": float(np.median(values)),
-            "p95": float(np.percentile(values, 95)),
-            "max": float(values.max()),
-            "samples": [float(v) for v in values.tolist()],
-        }
-
-    def _build_algorithm_metrics(
-        self,
-        alg_name,
-        model_info,
-        resolved_vecnormalize_path,
-        reward,
-        steps,
-        done,
-        truncated,
-        sim,
-        saliency_values,
-    ):
-        env_cfg = get_tuning_section(self.mission["config"], "eval")["env"]
-        mission_stats = sim.get("mission_stats", [])
-        safety = sim.get("safety_violations", {})
-        episode_summary = sim.get("episode_summary", {})
-        reward_breakdown = sim.get("reward_breakdown", {})
-        telemetry = sim.get("telemetry", [])
-
-        reached_waypoints = sum(
-            drone.get("waypoints_reached", 0)
-            for drone in mission_stats
         )
-        total_waypoints = sum(
-            drone.get(
-                "assigned_waypoints",
-                self.mission["config"]["drone_settings"]["num_wps_per_drone"],
-            )
-            for drone in mission_stats
-        )
-        total_distance = sum(
-            drone.get("dist_navigating", 0.0)
-            for drone in mission_stats
-        )
-        avg_distance = (
-            float(total_distance / len(mission_stats))
-            if mission_stats
+
+    return {
+        "origin": (
+            float((top_left[0] + bottom_right[0]) / 2.0),
+            float((top_left[1] + bottom_right[1]) / 2.0),
+        ),
+        "top_left": top_left,
+        "bottom_right": bottom_right,
+        "box_width_m": float(width_m),
+        "box_height_m": float(height_m),
+        "box_area_km2": float((width_m * height_m) / 1_000_000.0),
+        "num_drones": len(uav_records),
+        "waypoints_per_drone": (
+            float(sum(len(record["waypoints"]) for record in uav_records) / len(uav_records))
+            if uav_records
             else 0.0
-        )
-        planned_total_distance = self.mission["definition"]["planned_route_distance_m_total"]
-        saliency = self._summarize_saliency(saliency_values)
-
-        termination_reason = episode_summary.get("termination_reason")
-        if not termination_reason or termination_reason == "in_progress":
-            if safety.get("critical", {}).get("total_count", 0) > 0:
-                termination_reason = "critical_violation"
-            elif total_waypoints and reached_waypoints >= total_waypoints:
-                termination_reason = "completed"
-            elif steps >= env_cfg["max_steps"]:
-                termination_reason = "max_steps"
-            else:
-                termination_reason = "ended"
-
-        completion_rate = (
-            float(reached_waypoints / total_waypoints)
-            if total_waypoints
+        ),
+        "total_waypoints": int(sum(len(record["waypoints"]) for record in uav_records)),
+        "planned_route_distance_m_total": float(total_planned_distance),
+        "planned_route_distance_m_avg": (
+            float(total_planned_distance / len(uav_records))
+            if uav_records
             else 0.0
-        )
-        duration_s = float(steps * env_cfg["dt"])
-        reward_per_step = float(reward / steps) if steps else 0.0
-        min_pairwise_distance = episode_summary.get("min_pairwise_distance_m")
+        ),
+        "uavs": uav_records,
+    }
+
+
+def summarize_mission(
+    *,
+    policy_path: str,
+    reward: float,
+    steps: int,
+    terminated: bool,
+    truncated: bool,
+    metrics: dict,
+    mission_definition: dict,
+    dt: float,
+) -> dict:
+    mission_stats = metrics.get("mission_stats", [])
+    safety = metrics.get("safety_violations", {})
+    episode_summary = metrics.get("episode_summary", {})
+    reward_breakdown = metrics.get("reward_breakdown", {})
+    telemetry = metrics.get("telemetry", [])
+
+    reached_waypoints = sum(drone.get("waypoints_reached", 0) for drone in mission_stats)
+    total_waypoints = sum(
+        drone.get("assigned_waypoints", mission_definition["waypoints_per_drone"])
+        for drone in mission_stats
+    )
+    total_distance = sum(drone.get("dist_navigating", 0.0) for drone in mission_stats)
+    avg_distance = float(total_distance / len(mission_stats)) if mission_stats else 0.0
+    completion_rate = float(reached_waypoints / total_waypoints) if total_waypoints else 0.0
+    termination_reason = episode_summary.get("termination_reason") or "ended"
+    min_pairwise_distance = episode_summary.get("min_pairwise_distance_m")
+    crashed = termination_reason == "critical_violation"
+    completed_mission = termination_reason == "completed"
+    is_truncated = bool(truncated or termination_reason == "max_steps")
+
+    summary = {
+        "waypoints_reached_total": int(reached_waypoints),
+        "waypoints_total": int(total_waypoints),
+        "waypoints_remaining_total": int(max(total_waypoints - reached_waypoints, 0)),
+        "waypoint_completion_rate": completion_rate,
+        "waypoint_throughput_per_min": (
+            float(reached_waypoints / max((steps * dt) / 60.0, 1e-6))
+            if steps > 0
+            else 0.0
+        ),
+        "avg_distance_per_uav_m": avg_distance,
+        "total_distance_m": float(total_distance),
+        "planned_route_distance_m_total": float(
+            mission_definition["planned_route_distance_m_total"]
+        ),
+        "distance_vs_planned_ratio": (
+            float(total_distance / mission_definition["planned_route_distance_m_total"])
+            if mission_definition["planned_route_distance_m_total"]
+            else None
+        ),
+        "caution_events": int(safety.get("caution", {}).get("total_count", 0)),
+        "critical_events": int(safety.get("critical", {}).get("total_count", 0)),
+        "geofence_exits": int(safety.get("geofence", {}).get("total_count", 0)),
+        "geofence_outside_steps": int(
+            safety.get("geofence", {}).get("outside_step_total", 0)
+        ),
+        "min_pairwise_distance_m": (
+            float(min_pairwise_distance) if min_pairwise_distance is not None else None
+        ),
+        "min_pairwise_pair": episode_summary.get("min_pairwise_pair"),
+        "min_pairwise_time_s": episode_summary.get("min_pairwise_time_s"),
+        "uavs_completed": int(episode_summary.get("uavs_completed", 0)),
+        "deconfliction_time_s": float(episode_summary.get("deconfliction_time_s", 0.0)),
+        "circling_steps_total": int(episode_summary.get("circling_steps_total", 0)),
+        "circling_breakouts_total": int(
+            episode_summary.get("circling_breakouts_total", 0)
+        ),
+        "duration_s": float(steps * dt),
+        "reward_per_step": float(reward / steps) if steps else 0.0,
+        "completed_mission": completed_mission,
+        "crashed": crashed,
+        "failed_mission": bool(not completed_mission),
+        "truncated": is_truncated,
+        "timed_out": bool(termination_reason == "max_steps"),
+        "boundary_compliant": bool(
+            int(safety.get("geofence", {}).get("total_count", 0)) == 0
+            and int(safety.get("geofence", {}).get("outside_step_total", 0)) == 0
+        ),
+    }
+
+    return {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "policy": {"model_path": policy_path},
+        "reward": float(reward),
+        "steps": int(steps),
+        "duration_s": summary["duration_s"],
+        "done": bool(terminated),
+        "truncated": summary["truncated"],
+        "termination_reason": termination_reason,
+        "completed_mission": summary["completed_mission"],
+        "summary": summary,
+        "mission_stats": mission_stats,
+        "episode_summary": episode_summary,
+        "reward_breakdown": reward_breakdown,
+        "safety_violations": safety,
+        "telemetry": telemetry,
+    }
+
+
+def update_history(history: dict, mission_record: dict):
+    summary = mission_record["summary"]
+    history["rewards"].append(mission_record["reward"])
+    history["steps"].append(mission_record["steps"])
+    history["durations_s"].append(mission_record["duration_s"])
+    history["reward_per_step"].append(summary["reward_per_step"])
+    history["wps"].append(summary["waypoint_completion_rate"])
+    history["throughput"].append(summary["waypoint_throughput_per_min"])
+    history["distances"].append(summary["avg_distance_per_uav_m"])
+    history["distance_ratios"].append(
+        float(summary["distance_vs_planned_ratio"])
+        if summary["distance_vs_planned_ratio"] is not None
+        else np.nan
+    )
+    history["caution_counts"].append(summary["caution_events"])
+    history["critical_counts"].append(summary["critical_events"])
+    history["geofence_counts"].append(summary["geofence_exits"])
+    history["outside_steps"].append(summary["geofence_outside_steps"])
+    history["circling_steps"].append(summary["circling_steps_total"])
+    history["circling_breakouts"].append(summary["circling_breakouts_total"])
+    history["deconfliction_times"].append(summary["deconfliction_time_s"])
+    history["min_pairwise_distances"].append(
+        float(summary["min_pairwise_distance_m"])
+        if summary["min_pairwise_distance_m"] is not None
+        else np.nan
+    )
+    history["timed_out"] += int(summary["timed_out"])
+    history["boundary_compliant"] += int(summary["boundary_compliant"])
+    history["status_counts"][mission_record["termination_reason"]] += 1
+    if summary["crashed"]:
+        history["crashes"] += 1
+    if summary["failed_mission"]:
+        history["failed"] += 1
+    if summary["completed_mission"]:
+        history["completed"] += 1
+    if mission_record["termination_reason"] == "max_steps":
+        history["max_steps"] += 1
+
+
+def build_benchmark(history: dict) -> dict:
+    rewards = np.asarray(history["rewards"], dtype=float)
+    steps = np.asarray(history["steps"], dtype=float)
+    durations = np.asarray(history["durations_s"], dtype=float)
+    reward_per_step = np.asarray(history["reward_per_step"], dtype=float)
+    distances = np.asarray(history["distances"], dtype=float)
+    wps = np.asarray(history["wps"], dtype=float)
+    throughput = np.asarray(history["throughput"], dtype=float)
+    distance_ratios = np.asarray(history["distance_ratios"], dtype=float)
+    caution = np.asarray(history["caution_counts"], dtype=float)
+    critical = np.asarray(history["critical_counts"], dtype=float)
+    geofence = np.asarray(history["geofence_counts"], dtype=float)
+    outside_steps = np.asarray(history["outside_steps"], dtype=float)
+    circling_steps = np.asarray(history["circling_steps"], dtype=float)
+    circling_breakouts = np.asarray(history["circling_breakouts"], dtype=float)
+    deconfliction_times = np.asarray(history["deconfliction_times"], dtype=float)
+    min_pairwise = np.asarray(history["min_pairwise_distances"], dtype=float)
+    finite_min_pairwise = min_pairwise[np.isfinite(min_pairwise)]
+    finite_distance_ratios = distance_ratios[np.isfinite(distance_ratios)]
+    mission_count = max(int(len(rewards)), 1)
+
+    return {
+        "status": "completed",
+        "completed_at": datetime.now(timezone.utc).isoformat(),
+        "mean_reward": float(rewards.mean()) if rewards.size else 0.0,
+        "std_reward": float(rewards.std()) if rewards.size else 0.0,
+        "median_reward": float(np.median(rewards)) if rewards.size else 0.0,
+        "p10_reward": float(np.percentile(rewards, 10)) if rewards.size else 0.0,
+        "p90_reward": float(np.percentile(rewards, 90)) if rewards.size else 0.0,
+        "avg_steps": float(steps.mean()) if steps.size else 0.0,
+        "avg_duration_s": float(durations.mean()) if durations.size else 0.0,
+        "avg_reward_per_step": float(reward_per_step.mean()) if reward_per_step.size else 0.0,
+        "avg_dist_m": float(distances.mean()) if distances.size else 0.0,
+        "wp_completion_rate": float(wps.mean()) if wps.size else 0.0,
+        "avg_waypoint_throughput_per_min": float(throughput.mean()) if throughput.size else 0.0,
+        "mission_completion_rate": float(history["completed"] / mission_count),
+        "crash_rate": float(history["crashes"] / mission_count),
+        "failure_rate": float(history["failed"] / mission_count),
+        "timeout_rate": float(history["timed_out"] / mission_count),
+        "boundary_compliance_rate": float(history["boundary_compliant"] / mission_count),
+        "avg_caution_events": float(caution.mean()) if caution.size else 0.0,
+        "avg_critical_events": float(critical.mean()) if critical.size else 0.0,
+        "avg_geofence_exits": float(geofence.mean()) if geofence.size else 0.0,
+        "avg_geofence_outside_steps": float(outside_steps.mean()) if outside_steps.size else 0.0,
+        "avg_circling_steps": float(circling_steps.mean()) if circling_steps.size else 0.0,
+        "avg_circling_breakouts": (
+            float(circling_breakouts.mean()) if circling_breakouts.size else 0.0
+        ),
+        "avg_deconfliction_time_s": (
+            float(deconfliction_times.mean()) if deconfliction_times.size else 0.0
+        ),
+        "avg_distance_vs_planned_ratio": (
+            float(finite_distance_ratios.mean()) if finite_distance_ratios.size else None
+        ),
+        "avg_min_pairwise_distance_m": (
+            float(finite_min_pairwise.mean()) if finite_min_pairwise.size else None
+        ),
+        "status_counts": dict(history["status_counts"]),
+        "num_missions": int(len(rewards)),
+    }
+
+
+def print_benchmark(summary: dict):
+    table = Table(title="MAPPO Evaluation Summary")
+    table.add_column("Metric")
+    table.add_column("Value")
+    table.add_row("Mean Reward", f"{summary['mean_reward']:.2f}")
+    table.add_row("Reward Std", f"{summary['std_reward']:.2f}")
+    table.add_row("Avg Steps", f"{summary['avg_steps']:.1f}")
+    table.add_row("Waypoint Completion", f"{summary['wp_completion_rate']:.2%}")
+    table.add_row("Waypoint Throughput", f"{summary['avg_waypoint_throughput_per_min']:.2f}/min")
+    table.add_row("Mission Completion", f"{summary['mission_completion_rate']:.2%}")
+    table.add_row("Crash Rate", f"{summary['crash_rate']:.2%}")
+    table.add_row("Timeout Rate", f"{summary['timeout_rate']:.2%}")
+    table.add_row("Boundary Compliance", f"{summary['boundary_compliance_rate']:.2%}")
+    table.add_row("Failure Rate", f"{summary['failure_rate']:.2%}")
+    table.add_row("Avg Circling Steps", f"{summary['avg_circling_steps']:.1f}")
+    table.add_row("Avg Deconfliction Time", f"{summary['avg_deconfliction_time_s']:.1f} s")
+    table.add_row(
+        "Avg Dist/Planned",
+        str(summary["avg_distance_vs_planned_ratio"]),
+    )
+    table.add_row("Avg Min Separation", str(summary["avg_min_pairwise_distance_m"]))
+    console.print(table)
 
-        summary = {
-            "waypoints_reached_total": int(reached_waypoints),
-            "waypoints_total": int(total_waypoints),
-            "waypoint_completion_rate": completion_rate,
-            "avg_distance_per_uav_m": avg_distance,
-            "total_distance_m": float(total_distance),
-            "planned_route_distance_m_total": float(planned_total_distance),
-            "distance_vs_planned_ratio": (
-                float(total_distance / planned_total_distance)
-                if planned_total_distance
-                else None
-            ),
-            "caution_events": int(safety.get("caution", {}).get("total_count", 0)),
-            "critical_events": int(safety.get("critical", {}).get("total_count", 0)),
-            "geofence_exits": int(safety.get("geofence", {}).get("total_count", 0)),
-            "geofence_outside_steps": int(safety.get("geofence", {}).get("outside_step_total", 0)),
-            "hard_safety_uses": int(safety.get("hard_safety", {}).get("total_count", 0)),
-            "anti_circling_uses": int(safety.get("anti_circling", {}).get("total_count", 0)),
-            "min_pairwise_distance_m": (
-                float(min_pairwise_distance)
-                if min_pairwise_distance is not None
-                else None
-            ),
-            "min_pairwise_pair": episode_summary.get("min_pairwise_pair"),
-            "min_pairwise_time_s": episode_summary.get("min_pairwise_time_s"),
-            "uavs_completed": int(episode_summary.get("uavs_completed", 0)),
-            "duration_s": duration_s,
-            "reward_per_step": reward_per_step,
-            "completed_mission": termination_reason == "completed",
-            "crashed": termination_reason == "critical_violation",
-            "truncated": bool(truncated or termination_reason == "max_steps"),
-        }
-
-        return {
-            "algorithm": alg_name,
-            "policy": {
-                "model_path": model_info["model_path"],
-                "configured_vecnormalize_path": model_info.get("vecnormalize_path"),
-                "resolved_vecnormalize_path": resolved_vecnormalize_path,
-            },
-            "reward": float(reward),
-            "steps": int(steps),
-            "duration_s": duration_s,
-            "reward_per_step": reward_per_step,
-            "done": bool(done),
-            "truncated": summary["truncated"],
-            "termination_reason": termination_reason,
-            "completed_mission": summary["completed_mission"],
-            "saliency_mean": saliency["mean"],
-            "saliency_max": saliency["max"],
-            "saliency": saliency,
-            "summary": summary,
-            "telemetry": telemetry,
-            "mission_stats": mission_stats,
-            "episode_summary": episode_summary,
-            "reward_breakdown": reward_breakdown,
-            "safety_violations": safety,
-            "simulation": sim,
-        }
-
-    def _update_history(self, alg_name, algorithm_metrics):
-        summary = algorithm_metrics["summary"]
-
-        self.history[alg_name]["rewards"].append(algorithm_metrics["reward"])
-        self.history[alg_name]["steps"].append(algorithm_metrics["steps"])
-        self.history[alg_name]["durations_s"].append(algorithm_metrics["duration_s"])
-        self.history[alg_name]["reward_per_step"].append(algorithm_metrics["reward_per_step"])
-        self.history[alg_name]["wps"].append(summary["waypoint_completion_rate"])
-        self.history[alg_name]["distances"].append(summary["avg_distance_per_uav_m"])
-        self.history[alg_name]["caution_counts"].append(summary["caution_events"])
-        self.history[alg_name]["critical_counts"].append(summary["critical_events"])
-        self.history[alg_name]["geofence_counts"].append(summary["geofence_exits"])
-        self.history[alg_name]["outside_steps"].append(summary["geofence_outside_steps"])
-        self.history[alg_name]["hard_safety_counts"].append(summary["hard_safety_uses"])
-        self.history[alg_name]["anti_circling_counts"].append(summary["anti_circling_uses"])
-        self.history[alg_name]["min_pairwise_distances"].append(
-            float(summary["min_pairwise_distance_m"])
-            if summary["min_pairwise_distance_m"] is not None
-            else np.nan
-        )
-        self.history[alg_name]["saliency_means"].append(algorithm_metrics["saliency_mean"])
-
-        if summary["crashed"]:
-            self.history[alg_name]["crashes"] += 1
-        if summary["completed_mission"]:
-            self.history[alg_name]["completed"] += 1
-        if algorithm_metrics["termination_reason"] == "max_steps":
-            self.history[alg_name]["max_steps"] += 1
-
-    # -------------------------------------------------------
-    # Mission Generation
-    # -------------------------------------------------------
-
-    def create_mission(self):
-        eval_env_cfg = get_tuning_section(self.mission["config"], "eval")["env"]
-        eval_flight_cfg = get_tuning_section(self.mission["config"], "eval")["flight"]
-
-        def generate_origin():
-            return (
-                np.random.uniform(-70.0, 70.0),
-                np.random.uniform(-170.0, 170.0),
-            )
-
-        def pick_random_locs(tl, br, num_locs, min_dist=30):
-
-            lat_buffer = abs(tl[0] - br[0]) * 0.1
-            lon_buffer = abs(tl[1] - br[1]) * 0.1
-
-            safe_tl = (tl[0] - lat_buffer, tl[1] + lon_buffer)
-            safe_br = (br[0] + lat_buffer, br[1] - lon_buffer)
-
-            coords = []
-
-            for _ in range(1000):
-
-                lat = np.random.uniform(safe_br[0], safe_tl[0])
-                lon = np.random.uniform(safe_tl[1], safe_br[1])
-
-                if all(
-                    geopy_distance((lat, lon), (c[0], c[1])).meters >= min_dist
-                    for c in coords
-                ):
-                    coords.append((lat, lon))
-
-                if len(coords) >= num_locs:
-                    return coords
-
-            return pick_random_locs(tl, br, num_locs, min_dist=10)
-
-        def generate_new_box(min_m, max_m, origin):
-
-            w_m, h_m = np.random.uniform(min_m, max_m, size=2)
-
-            lat_off = (h_m / 2) / 111_320.0
-            lon_off = (w_m / 2) / (111_320.0 * np.cos(np.radians(origin[0])))
-
-            tl = (origin[0] + lat_off, origin[1] - lon_off)
-            br = (origin[0] - lat_off, origin[1] + lon_off)
-
-            return tl, br
-
-        config = copy.deepcopy(self.mission["config"])
-
-        origin = generate_origin()
-
-        tl, br = generate_new_box(
-            eval_env_cfg["box_min_m"],
-            eval_env_cfg["box_max_m"],
-            origin
-        )
-
-        num_drones = config["drone_settings"]["num_drones"]
-
-        init_poses = pick_random_locs(tl, br, num_drones, min_dist=100)
-
-        uavs = []
-
-        for i in range(num_drones):
-
-            uavs.append(
-                FixedWingAircraft(
-                    id_tag=f"UAV-{i}",
-                    initial_position=Position(init_poses[i][0], init_poses[i][1]),
-                    initial_heading=np.random.uniform(-np.pi, np.pi),
-                    cruise_speed=np.random.uniform(
-                        eval_flight_cfg["cruise_speed_min_mps"],
-                        eval_flight_cfg["cruise_speed_max_mps"]
-                    ),
-                    turning_radius=np.random.uniform(
-                        eval_flight_cfg["turning_radius_min_m"],
-                        eval_flight_cfg["turning_radius_max_m"]
-                    ),
-                    mission=pick_random_locs(
-                        tl,
-                        br,
-                        num_locs=config["drone_settings"]["num_wps_per_drone"],
-                        min_dist=50
-                    )
-                )
-            )
-
-        config["env"]["origin"] = origin
-        config["env"]["top_left"] = tl
-        config["env"]["bottom_right"] = br
-
-        self.mission["config"] = config
-        self.mission["uavs"] = uavs
-        self.mission["definition"] = self._build_mission_definition()
-
-    # -------------------------------------------------------
-
-    def create_test_environment(self):
-        tuning = get_tuning_section(self.mission["config"], "eval")
-        env_cfg = tuning["env"]
-        reward_cfg = tuning["rewards"]
-        hard_safety_cfg = tuning["hard_safety"]
-        anti_circling_cfg = tuning["anti_circling"]
-
-        uavs = copy.deepcopy(self.mission["uavs"])
-
-        return MultiUAVEnv(
-            uavs,
-            tl=self.mission["config"]["env"]["top_left"],
-            br=self.mission["config"]["env"]["bottom_right"],
-            dt=env_cfg["dt"],
-            max_steps=env_cfg["max_steps"],
-            mode="manual_mission",
-            caution_dist=env_cfg["caution_dist"],
-            critical_dist=env_cfg["critical_dist"],
-            inference_mode=False,
-            reward_config=reward_cfg,
-            hard_safety_config=hard_safety_cfg,
-            anti_circling_config=anti_circling_cfg,
-        )
-
-    # -------------------------------------------------------
-
-    def load_models(self):
-
-        algo_map = {"SAC": SAC, "A2C": A2C, "PPO": PPO}
-
-        self.models = {}
-
-        for alg_name, alg_cfg in self.mission["config"]["eval_models"].items():
-
-            if not alg_cfg["model_path"]:
-                continue
-
-            console.print(f"[cyan]Loading {alg_name}[/cyan]")
-
-            model_cls = algo_map.get(alg_name)
-
-            model = model_cls.load(
-                alg_cfg["model_path"],
-                device=alg_cfg["device"]
-            )
-
-            self.models[alg_name] = {
-                "model": model,
-                "model_path": alg_cfg["model_path"],
-                "vecnormalize_path": alg_cfg.get("vecnormalize_path"),
-            }
-
-            self.history.setdefault(alg_name, {
-                "rewards": [],
-                "steps": [],
-                "durations_s": [],
-                "reward_per_step": [],
-                "wps": [],
-                "distances": [],
-                "caution_counts": [],
-                "critical_counts": [],
-                "geofence_counts": [],
-                "outside_steps": [],
-                "hard_safety_counts": [],
-                "anti_circling_counts": [],
-                "min_pairwise_distances": [],
-                "saliency_means": [],
-                "crashes": 0,
-                "completed": 0,
-                "max_steps": 0,
-            })
-
-    # -------------------------------------------------------
-    # Evaluation + Saliency
-    # -------------------------------------------------------
-
-    def run_tests_on_env(self):
-
-        self.metrics = {}
-
-        for alg_name, model_info in self.models.items():
-            env_cfg = get_tuning_section(self.mission["config"], "eval")["env"]
-
-            raw_env = self.create_test_environment()
-
-            env, stats_path = make_eval_env(
-                lambda raw_env=raw_env: raw_env,
-                model_path=model_info["model_path"],
-                vecnormalize_path=model_info["vecnormalize_path"],
-                norm_reward=False,
-            )
-
-            base_env = unwrap_env(env)
-            base_env.clear_missions = False
-
-            model = model_info["model"]
-            model.set_env(env)
-
-            if stats_path:
-                console.print(f"[green]{alg_name} VecNormalize:[/green] {stats_path}")
-
-            # -------------------------------
-            # MAIN EVALUATION (unchanged)
-            # -------------------------------
-            step_count, reward, _, done, truncated, sim = run_light_episode(
-                model,
-                env,
-                env_cfg["max_steps"],
-                alg_name
-            )
-
-            # -------------------------------
-            # SALIENCY ROLLOUT
-            # -------------------------------
-            saliency_values = []
-
-            try:
-                obs = env.reset()
-                saliency_analyzer = SaliencyAnalyzer(model)
-
-                for _ in range(200):
-
-                    action, _ = model.predict(obs, deterministic=True)
-
-                    # Normalize observation
-                    obs_array = None
-
-                    if isinstance(obs, np.ndarray):
-                        obs_array = obs
-                    elif isinstance(obs, dict):
-                        obs_array = np.concatenate(
-                            [np.asarray(v).flatten() for v in obs.values()]
-                        )[None, :]
-                    elif isinstance(obs, tuple):
-                        obs_array = np.asarray(obs[0])
-
-                    if obs_array is not None:
-                        try:
-                            s = saliency_analyzer.compute_saliency(obs_array)
-                            saliency_values.append(np.mean(s))
-                        except Exception:
-                            pass
-
-                    step_result = env.step(action)
-
-                    # ---- Handle 4 or 5 return values
-                    if len(step_result) == 5:
-                        obs, _, done, truncated, _ = step_result
-                    else:
-                        obs, _, done, _ = step_result
-                        truncated = False
-
-                    if done or truncated:
-                        break
-
-            except Exception as e:
-                console.print(f"[yellow]Saliency skipped: {e}[/yellow]")
-
-            # -------------------------------
-            # STORE METRICS
-            # -------------------------------
-            algorithm_metrics = self._build_algorithm_metrics(
-                alg_name,
-                model_info,
-                stats_path,
-                reward,
-                step_count,
-                done,
-                truncated,
-                sim,
-                saliency_values,
-            )
-            self.metrics[alg_name] = algorithm_metrics
-            self._update_history(alg_name, algorithm_metrics)
-
-            env.close()
-
-    # -------------------------------------------------------
-
-    def show_metrics(self):
-
-        console.print(Panel.fit("[bold blue]Mission Results[/bold blue]"))
-
-        drone_count = len(next(iter(self.metrics.values()))["simulation"]["mission_stats"])
-
-        table = Table()
-        table.add_column("Algo")
-        table.add_column("Reward")
-        table.add_column("Steps")
-        table.add_column("Outcome")
-        table.add_column("Comp%")
-        table.add_column("MinSep")
-        table.add_column("Saliency")
-
-        for i in range(drone_count):
-            table.add_column(f"WP{i}")
-            table.add_column(f"Dist{i}")
-
-        table.add_column("Geofence")
-        table.add_column("Caution")
-        table.add_column("Critical")
-        table.add_column("HardSafe")
-        table.add_column("AntiCircle")
-
-        for alg_name, metrics in self.metrics.items():
-
-            row = [
-                alg_name,
-                f"{metrics['reward']:.0f}",
-                str(metrics["steps"]),
-                metrics["termination_reason"],
-                f"{metrics['summary']['waypoint_completion_rate']:.0%}",
-                (
-                    f"{metrics['summary']['min_pairwise_distance_m']:.1f}"
-                    if metrics["summary"]["min_pairwise_distance_m"] is not None
-                    else "-"
-                ),
-                f"{metrics['saliency_mean']:.4f}"
-            ]
-
-            for drone in metrics["simulation"]["mission_stats"]:
-
-                row.append(
-                    f"{drone['waypoints_reached']}/"
-                    f"{self.mission['config']['drone_settings']['num_wps_per_drone']}"
-                )
-
-                row.append(
-                    f"{drone['dist_navigating']:.0f}"
-                )
-
-            safety = metrics["simulation"]["safety_violations"]
-
-            row.extend([
-                str(safety["geofence"]["total_count"]),
-                str(safety["caution"]["total_count"]),
-                str(safety["critical"]["total_count"]),
-                str(safety["hard_safety"]["total_count"]),
-                str(safety["anti_circling"]["total_count"]),
-            ])
-
-            table.add_row(*row)
-
-        console.print(table)
-
-    # -------------------------------------------------------
-
-    def run_missions(self, num_missions):
-
-        for i in range(num_missions):
-
-            console.print(
-                Panel.fit(
-                    f"[bold magenta]Starting Mission {i+1}/{num_missions}[/bold magenta]"
-                )
-            )
-
-            self.create_mission()
-            self.run_tests_on_env()
-            self.show_metrics()
-            self.writer.append_mission(
-                i + 1,
-                self.mission["definition"],
-                self.metrics,
-                self.history,
-            )
-
-        self.writer.write_benchmark(self.history)
-
-
-# -------------------------------------------------------
 
 def eval(config):
-    evaluator = Evaluator(config)
-    evaluator.load_models()
-    evaluator.run_missions(config["eval"]["num_missions"])
+    eval_cfg = config["eval"]
+    tuning = get_tuning_section(config, "eval")
+    env_cfg = tuning["env"]
 
+    console.print(Panel.fit("[bold blue]MAPPO Evaluation[/bold blue]"))
 
-if __name__ == "__main__":
-    from config_utils import load_mode_config
+    env = MultiUAVParallelEnv(
+        dt=env_cfg["dt"],
+        max_steps=env_cfg["max_steps"],
+        boundary_margin=env_cfg["boundary_margin"],
+        mission_waypoint_count=config["drone_settings"]["num_wps_per_drone"],
+        waypoint_arrival_radius=env_cfg.get("waypoint_arrival_radius", 30.0),
+        obs_stack_size=env_cfg["obs_stack_size"],
+        caution_dist=env_cfg["caution_dist"],
+        critical_dist=env_cfg["critical_dist"],
+        min_agents=env_cfg["min_agents"],
+        max_agents=env_cfg["max_agents"],
+        map_size_range_m=(env_cfg["box_min_m"], env_cfg["box_max_m"]),
+        flight_config=tuning["flight"],
+        reward_config=tuning["rewards"],
+        guidance_config=tuning["guidance"],
+    )
 
-    config = load_mode_config("eval")
+    policy = MAPPOPolicy.load(
+        eval_cfg["model_path"],
+        device=resolve_device(str(eval_cfg.get("device", "cpu"))),
+    )
+    validate_policy_env(policy, env)
 
-    eval(config)
+    writer = ResultsWriter(config["output"]["results_path"], config)
+    history = {
+        "rewards": [],
+        "steps": [],
+        "durations_s": [],
+        "reward_per_step": [],
+        "wps": [],
+        "throughput": [],
+        "distances": [],
+        "distance_ratios": [],
+        "caution_counts": [],
+        "critical_counts": [],
+        "geofence_counts": [],
+        "outside_steps": [],
+        "circling_steps": [],
+        "circling_breakouts": [],
+        "deconfliction_times": [],
+        "min_pairwise_distances": [],
+        "crashes": 0,
+        "failed": 0,
+        "completed": 0,
+        "max_steps": 0,
+        "timed_out": 0,
+        "boundary_compliant": 0,
+        "status_counts": Counter(),
+    }
+
+    num_missions = int(eval_cfg["num_missions"])
+    deterministic = bool(eval_cfg.get("deterministic", True))
+
+    try:
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            console=console,
+        ) as progress:
+            task = progress.add_task("[cyan]Evaluating MAPPO...", total=num_missions)
+
+            for mission_index in range(num_missions):
+                env.reset(options={"num_agents": int(config["drone_settings"]["num_drones"])})
+                mission_definition = build_mission_definition(env, config)
+                steps, reward, _, _, terminated, truncated, metrics = run_light_episode(
+                    policy,
+                    env,
+                    int(env_cfg["max_steps"]),
+                    label="MAPPO",
+                    deterministic=deterministic,
+                    show_progress=False,
+                )
+                mission_record = summarize_mission(
+                    policy_path=eval_cfg["model_path"],
+                    reward=reward,
+                    steps=steps,
+                    terminated=terminated,
+                    truncated=truncated,
+                    metrics=metrics,
+                    mission_definition=mission_definition,
+                    dt=float(env_cfg["dt"]),
+                )
+                mission_record["mission_index"] = mission_index
+                mission_record["mission"] = mission_definition
+                writer.append_mission(mission_record)
+                update_history(history, mission_record)
+                progress.update(task, advance=1)
+
+        benchmark = build_benchmark(history)
+        writer.finalize(benchmark)
+        print_benchmark(benchmark)
+    finally:
+        env.close()

@@ -1,5 +1,5 @@
 import numpy as np
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 from flight_engine.helpers import wrap_angle, Position, FlightMode
 from flight_engine.trans_coorders import CoordinateTransformer
@@ -15,23 +15,24 @@ class FixedWingAircraft:
     
     def __init__(self, id_tag: str, initial_position: Position, 
                  initial_heading: float, cruise_speed: float, 
-                 turning_radius: float, color: str = 'blue', mission = None,
-                 speed_variance = 0, turning_variance = 0):
+                 turning_radius: float, mission = None,
+                 turn_response_time_s: float = 0.0):
         self.id_tag = id_tag
         self.position = Position(initial_position.latitude, initial_position.longitude)
         self.initial_pos = self.position
         self.heading = initial_heading
         self.initial_heading = initial_heading
-        self.color = color
-        self.speed_variance = speed_variance
-        self.turning_variance = turning_variance
         self.base_turning_radius = turning_radius
         self.base_cruise_speed = cruise_speed
         self.turning_radius = turning_radius
         self.cruise_speed = cruise_speed
 
         # Components
-        self.dynamics = FlightDynamics(turning_radius, cruise_speed)
+        self.dynamics = FlightDynamics(
+            turning_radius,
+            cruise_speed,
+            turn_response_time_s=turn_response_time_s,
+        )
         self.waypoint_manager = WaypointManager()
         
         # State tracking
@@ -44,18 +45,12 @@ class FixedWingAircraft:
             )
         ]
         self.distance_traveled = 0.0
+        self.actual_turn_rate = 0.0
+        self.desired_turn_rate = 0.0
 
         # Add initial waypoints
         if mission:
             self.add_waypoints(mission)
-
-    def set_flight_dynamics(self, turning_radius: float, cruise_speed: float):
-        """Keep the aircraft and dynamics model in sync after reset-time sampling."""
-        self.turning_radius = turning_radius
-        self.cruise_speed = cruise_speed
-        self.dynamics.turning_radius = turning_radius
-        self.dynamics.cruise_speed = cruise_speed
-        self.dynamics.max_turn_rate = cruise_speed / turning_radius
     
     def add_wp(self, waypoint: Position):
         self.waypoint_manager.add_waypoint(waypoint)
@@ -72,30 +67,37 @@ class FixedWingAircraft:
             self.add_wp(wp)
     
     def update_simple(self, turn_rate: float, dt: float, transformer: CoordinateTransformer):
+        resolved_turn_rate = self.dynamics.resolve_turn_rate(
+            current_turn_rate=self.actual_turn_rate,
+            commanded_turn_rate=turn_rate,
+            dt=dt,
+        )
+
         # 1. Exact Arc Length (The "Odometer" distance)
         arc_length = self.dynamics.cruise_speed * dt
         self.distance_traveled += arc_length
 
         # 2. Calculate Displacement
         # If turn_rate is near zero, use the straight-line distance to avoid div by zero
-        if abs(turn_rate) < 1e-6:
+        if abs(resolved_turn_rate) < 1e-6:
             dist_straight = arc_length
             # Displacement uses current heading
             dx = dist_straight * np.sin(self.heading)
             dy = dist_straight * np.cos(self.heading)
         else:
             # The chord length is the straight line between start and end of the arc
-            dist_straight = (2 * self.dynamics.cruise_speed / abs(turn_rate)) * \
-                            np.sin(abs(turn_rate) * dt / 2.0)
+            dist_straight = (2 * self.dynamics.cruise_speed / abs(resolved_turn_rate)) * \
+                            np.sin(abs(resolved_turn_rate) * dt / 2.0)
             
             # The effective heading for the displacement is the average 
             # of the start heading and the end heading
-            avg_heading = self.heading + (turn_rate * dt / 2.0)
+            avg_heading = self.heading + (resolved_turn_rate * dt / 2.0)
             dx = dist_straight * np.sin(avg_heading)
             dy = dist_straight * np.cos(avg_heading)
 
         # 3. Update the state
-        self.heading = wrap_angle(self.heading + (turn_rate * dt))
+        self.actual_turn_rate = resolved_turn_rate
+        self.heading = wrap_angle(self.heading + (resolved_turn_rate * dt))
         
         curr_x, curr_y = transformer.geo_to_local(
             self.position.latitude, 

@@ -46,13 +46,11 @@ def get_tuning_section(config, mode):
     shared_flight = flight.get("shared", {})
     mode_flight = flight.get(mode, {})
     rewards = tuning.get("rewards", {})
-    hard_safety = tuning.get("hard_safety", {})
-    anti_circling = tuning.get("anti_circling", {})
+    guidance = tuning.get("guidance", {})
 
     return {
         "env": _deep_merge(shared_env, mode_env),
         "flight": _deep_merge(shared_flight, mode_flight),
         "rewards": copy.deepcopy(rewards),
-        "hard_safety": copy.deepcopy(hard_safety),
-        "anti_circling": copy.deepcopy(anti_circling),
+        "guidance": copy.deepcopy(guidance),
     }

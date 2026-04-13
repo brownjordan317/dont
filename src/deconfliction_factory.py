@@ -8,7 +8,8 @@ console = Console()
 
 class DeconflictionAutoPilotFactory:
     def __init__(self, mode):
-        self.config = self.read_config(mode)
+        config_mode = "test" if mode == "test_dubins" else mode
+        self.config = self.read_config(config_mode)
 
         if mode == 'train':
             console.print(Panel.fit("[bold green]Starting Training Mode[/bold green]"))
@@ -22,6 +23,10 @@ class DeconflictionAutoPilotFactory:
             console.print(Panel.fit("[bold red]Starting Evaluation Mode[/bold red]"))
             from eval import eval
             self.run = eval
+        elif mode == 'test_dubins':
+            console.print(Panel.fit("[bold magenta]Starting Dubins Visualization Mode[/bold magenta]"))
+            from test import create_dubins_sample_visualization
+            self.run = create_dubins_sample_visualization
 
     
     def read_config(self, mode):
@@ -37,9 +42,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--mode",
-        choices=["train", "test", "eval"],
+        choices=["train", "test", "eval", "test_dubins"],
         default="train",
-        help="Mode to run the factory in: 'train', 'test', or 'eval'."
+        help="Mode to run the factory in: 'train', 'test', 'eval', or 'test_dubins'."
     )
     args = parser.parse_args()
 
