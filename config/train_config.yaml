@@ -6,17 +6,17 @@ train:
   torch_num_threads: 4
   seed: 7
 
-  total_timesteps: 3_000_000
+  total_timesteps: 10_000_000
   num_envs: 32
   rollout_steps: 1024
   update_epochs: 2
   minibatch_size: 4096
-  checkpoint_interval: 300_000
+  checkpoint_interval: 1_000_000
   latest_checkpoint_interval: 100_000
   save_latest_checkpoint: true
   log_interval_updates: 5
 
-  learning_rate: 2e-5
+  learning_rate: 3e-5
   gamma: 0.99
   gae_lambda: 0.95
   clip_ratio: 0.05
@@ -25,15 +25,15 @@ train:
   value_loss_coef: 0.5
   max_grad_norm: 0.1
   target_kl: 0.005
-  reference_tracking_coef: 0.4
+  reference_tracking_coef: 0.3
   reference_tracking_delta: 0.1
   reference_warmstart_min_steps: 5_000
   reference_warmstart_max_steps: 300_000
   reference_warmstart_num_envs: 16
   reference_warmstart_learning_rate: 3e-4
   reference_warmstart_delta: 0.1
-  reference_warmstart_target_mae: 0.025
-  reference_warmstart_target_loss: 0.015
+  reference_warmstart_target_mae: 0.03
+  reference_warmstart_target_loss: 0.02
   reference_warmstart_convergence_updates: 100
   reference_warmstart_log_std: -2.5
   reference_warmstart_log_interval: 10_000

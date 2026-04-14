@@ -11,7 +11,7 @@ test:
   video_speed: 3
 
   gen_mission:
-    num_drones: 2
+    num_drones: 5
     num_waypoints: 20
 
   missions:

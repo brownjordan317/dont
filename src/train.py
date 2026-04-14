@@ -288,6 +288,16 @@ def log_episode_metrics(
         float(episode_summary.get("circling_breakouts_total", 0.0)),
         episode_index,
     )
+    writer.add_scalar(
+        "episode/waypoint_reapproach_steps",
+        float(episode_summary.get("waypoint_reapproach_steps_total", 0.0)),
+        episode_index,
+    )
+    writer.add_scalar(
+        "episode/waypoint_reapproach_events",
+        float(episode_summary.get("waypoint_reapproach_events_total", 0.0)),
+        episode_index,
+    )
     if min_pairwise_distance is not None:
         writer.add_scalar(
             "episode/min_pairwise_distance_m",
@@ -363,6 +373,27 @@ def build_training_env(tuning: dict) -> MultiUAVParallelEnv:
     return MultiUAVParallelEnv(
         dt=env_cfg["dt"],
         max_steps=env_cfg["max_steps"],
+        timeout_scale_with_mission_size=env_cfg.get(
+            "timeout_scale_with_mission_size",
+            False,
+        ),
+        timeout_steps_per_additional_waypoint=env_cfg.get(
+            "timeout_steps_per_additional_waypoint",
+            0,
+        ),
+        timeout_scale_with_route_distance=env_cfg.get(
+            "timeout_scale_with_route_distance",
+            False,
+        ),
+        timeout_steps_per_additional_route_km=env_cfg.get(
+            "timeout_steps_per_additional_route_km",
+            0.0,
+        ),
+        timeout_max_steps=env_cfg.get("timeout_max_steps"),
+        timeout_reference_waypoints=env_cfg.get("timeout_reference_waypoints"),
+        timeout_reference_route_distance_m=env_cfg.get(
+            "timeout_reference_route_distance_m"
+        ),
         boundary_margin=env_cfg["boundary_margin"],
         mission_waypoint_count=env_cfg["mission_waypoint_count"],
         mission_waypoint_count_min=env_cfg.get("mission_waypoint_count_min"),
@@ -1004,38 +1035,6 @@ def train(config):
                         current_episode_lengths[env_idx] = 0
                         env.reset()
 
-                    if checkpoint_interval > 0 and timesteps >= next_checkpoint:
-                        checkpoint_path = save_checkpoint(
-                            policy,
-                            save_dir=train_cfg["save_dir"],
-                            filename=f"{checkpoint_stem(train_cfg['model_name'])}_step_{timesteps}.pt",
-                            config=config,
-                            timesteps=timesteps,
-                            updates=updates,
-                        )
-                        console.print(f"[green]Checkpoint saved:[/green] {checkpoint_path}")
-                        next_checkpoint += checkpoint_interval
-
-                    if (
-                        latest_checkpoint_enabled
-                        and latest_checkpoint_interval > 0
-                        and timesteps >= next_latest_checkpoint
-                    ):
-                        latest_path = save_checkpoint(
-                            policy,
-                            save_dir=train_cfg["save_dir"],
-                            filename=latest_checkpoint_filename(train_cfg),
-                            config=config,
-                            timesteps=timesteps,
-                            updates=updates,
-                        )
-                        console.print(
-                            f"[green]Latest checkpoint updated:[/green] {latest_path}"
-                        )
-                        next_latest_checkpoint += latest_checkpoint_interval
-                        if writer is not None:
-                            writer.flush()
-
                     if steps_this_update >= rollout_steps or timesteps >= total_timesteps:
                         break
 
@@ -1071,6 +1070,39 @@ def train(config):
             batch = concat_rollout_batches(batches)
             updates += 1
             update_metrics = update_policy(policy, optimizer, batch, train_cfg)
+
+            while checkpoint_interval > 0 and timesteps >= next_checkpoint:
+                checkpoint_path = save_checkpoint(
+                    policy,
+                    save_dir=train_cfg["save_dir"],
+                    filename=f"{checkpoint_stem(train_cfg['model_name'])}_step_{timesteps}.pt",
+                    config=config,
+                    timesteps=timesteps,
+                    updates=updates,
+                )
+                console.print(f"[green]Checkpoint saved:[/green] {checkpoint_path}")
+                next_checkpoint += checkpoint_interval
+
+            while (
+                latest_checkpoint_enabled
+                and latest_checkpoint_interval > 0
+                and timesteps >= next_latest_checkpoint
+            ):
+                latest_path = save_checkpoint(
+                    policy,
+                    save_dir=train_cfg["save_dir"],
+                    filename=latest_checkpoint_filename(train_cfg),
+                    config=config,
+                    timesteps=timesteps,
+                    updates=updates,
+                )
+                console.print(
+                    f"[green]Latest checkpoint updated:[/green] {latest_path}"
+                )
+                next_latest_checkpoint += latest_checkpoint_interval
+                if writer is not None:
+                    writer.flush()
+
             mean_return = float(np.mean(recent_returns)) if recent_returns else 0.0
             mean_length = float(np.mean(recent_lengths)) if recent_lengths else 0.0
             completion_rate = float(np.mean(recent_completion)) if recent_completion else 0.0

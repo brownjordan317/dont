@@ -19,6 +19,7 @@ from flight_engine.navigation_utils import (
     build_rect_bounds,
     heading_to_radians,
     order_route_points,
+    planned_route_distance_m,
 )
 from flight_engine.reference_guidance import (
     ReferenceRoute,
@@ -44,6 +45,13 @@ class MultiUAVParallelEnv(ParallelEnv):
         *,
         dt: float = 0.3,
         max_steps: int = 1_500,
+        timeout_scale_with_mission_size: bool = False,
+        timeout_steps_per_additional_waypoint: int = 0,
+        timeout_scale_with_route_distance: bool = False,
+        timeout_steps_per_additional_route_km: float = 0.0,
+        timeout_max_steps: Optional[int] = None,
+        timeout_reference_waypoints: Optional[int] = None,
+        timeout_reference_route_distance_m: Optional[float] = None,
         boundary_margin: float = 0.05,
         mission_waypoint_count: int = 3,
         mission_waypoint_count_min: Optional[int] = None,
@@ -71,7 +79,35 @@ class MultiUAVParallelEnv(ParallelEnv):
         guidance_config = guidance_config or {}
 
         self.dt = float(dt)
-        self.max_steps = int(max_steps)
+        self.base_max_steps = max(int(max_steps), 1)
+        self.max_steps = self.base_max_steps
+        self.timeout_scale_with_mission_size = bool(timeout_scale_with_mission_size)
+        self.timeout_steps_per_additional_waypoint = max(
+            int(timeout_steps_per_additional_waypoint),
+            0,
+        )
+        self.timeout_scale_with_route_distance = bool(timeout_scale_with_route_distance)
+        self.timeout_steps_per_additional_route_km = max(
+            float(timeout_steps_per_additional_route_km),
+            0.0,
+        )
+        if timeout_max_steps is None:
+            timeout_max_steps = self.base_max_steps
+        self.timeout_max_steps = max(int(timeout_max_steps), self.base_max_steps)
+        self.timeout_reference_waypoints = (
+            max(int(timeout_reference_waypoints), 1)
+            if timeout_reference_waypoints is not None
+            else None
+        )
+        self.timeout_reference_route_distance_m = (
+            max(float(timeout_reference_route_distance_m), 0.0)
+            if timeout_reference_route_distance_m is not None
+            else None
+        )
+        self._episode_timeout_assigned_waypoints = 0
+        self._episode_timeout_reference_waypoints = 0
+        self._episode_timeout_max_route_distance_m = 0.0
+        self._episode_timeout_reference_route_distance_m = 0.0
         self.boundary_margin = float(boundary_margin)
         self.mission_waypoint_count = int(mission_waypoint_count)
         if mission_waypoint_count_min is None:
@@ -314,6 +350,28 @@ class MultiUAVParallelEnv(ParallelEnv):
         self.guidance_turn_radius_floor_scale = float(
             guidance_config.get("turn_radius_floor_scale", 1.35)
         )
+        self.waypoint_reapproach_min_steps = max(
+            int(guidance_config.get("waypoint_reapproach_min_steps", 14)),
+            1,
+        )
+        self.waypoint_reapproach_release_distance_scale = max(
+            float(
+                guidance_config.get(
+                    "waypoint_reapproach_release_distance_scale",
+                    2.4,
+                )
+            ),
+            1.0,
+        )
+        self.waypoint_reapproach_release_arrival_scale = max(
+            float(
+                guidance_config.get(
+                    "waypoint_reapproach_release_arrival_scale",
+                    3.5,
+                )
+            ),
+            1.0,
+        )
 
         self.self_feature_count = 34
         self.neighbor_feature_count = 30
@@ -422,6 +480,23 @@ class MultiUAVParallelEnv(ParallelEnv):
         self._circling_relief_progress = np.zeros(self.max_agents, dtype=np.int32)
         self._circling_steps_total = np.zeros(self.max_agents, dtype=np.int32)
         self._circling_breakouts_total = np.zeros(self.max_agents, dtype=np.int32)
+        self._waypoint_reapproach_active = np.zeros(self.max_agents, dtype=bool)
+        self._waypoint_reapproach_hold_remaining = np.zeros(
+            self.max_agents,
+            dtype=np.int32,
+        )
+        self._waypoint_reapproach_release_distance = np.zeros(
+            self.max_agents,
+            dtype=np.float32,
+        )
+        self._waypoint_reapproach_steps_total = np.zeros(
+            self.max_agents,
+            dtype=np.int32,
+        )
+        self._waypoint_reapproach_events_total = np.zeros(
+            self.max_agents,
+            dtype=np.int32,
+        )
         self._last_commanded_action_vector = np.zeros(self.max_agents, dtype=np.float32)
         self._last_policy_train_mask = np.zeros(self.max_agents, dtype=np.float32)
         self._deconfliction_active = np.zeros(self.max_agents, dtype=bool)
@@ -533,6 +608,11 @@ class MultiUAVParallelEnv(ParallelEnv):
         self._circling_relief_progress[:] = 0
         self._circling_steps_total[:] = 0
         self._circling_breakouts_total[:] = 0
+        self._waypoint_reapproach_active[:] = False
+        self._waypoint_reapproach_hold_remaining[:] = 0
+        self._waypoint_reapproach_release_distance[:] = 0.0
+        self._waypoint_reapproach_steps_total[:] = 0
+        self._waypoint_reapproach_events_total[:] = 0
         self._last_commanded_action_vector[:] = 0.0
         self._last_policy_train_mask[:] = 0.0
         self._deconfliction_active[:] = False
@@ -555,6 +635,7 @@ class MultiUAVParallelEnv(ParallelEnv):
             self._reset_random_episode(options)
         else:
             self._reset_manual_episode(options)
+        self.max_steps = self._resolve_episode_max_steps(options)
 
         self._sync_local_caches()
         self._refresh_route_guidance_cache()
@@ -595,11 +676,8 @@ class MultiUAVParallelEnv(ParallelEnv):
 
         self._prev_local_cache[:] = self._local_pos_cache
         commanded_action_vector = policy_action_vector.copy()
-        self._last_commanded_action_vector[:] = commanded_action_vector
         self._last_policy_train_mask[:] = 0.0
         was_deconfliction_active = self._deconfliction_active.copy()
-
-        executed_action_vector = commanded_action_vector.copy()
         for agent in current_agents:
             idx = self.agent_name_to_index[agent]
             aircraft = self.aircraft_by_agent[agent]
@@ -607,11 +685,27 @@ class MultiUAVParallelEnv(ParallelEnv):
                 aircraft.flight_mode != FlightMode.LOITERING
                 and aircraft.waypoint_manager.current_waypoint is not None
             )
+            assist_controls_aircraft = bool(
+                action_controls_aircraft
+                and self._should_apply_waypoint_reapproach_assist(
+                    idx=idx,
+                    aircraft=aircraft,
+                )
+            )
+            if assist_controls_aircraft:
+                commanded_action_vector[idx] = float(self._last_reference_action_vector[idx])
+                self._waypoint_reapproach_steps_total[idx] += 1
             self._last_policy_train_mask[idx] = (
                 1.0
-                if action_controls_aircraft
+                if action_controls_aircraft and not assist_controls_aircraft
                 else 0.0
             )
+        self._last_commanded_action_vector[:] = commanded_action_vector
+
+        executed_action_vector = commanded_action_vector.copy()
+        for agent in current_agents:
+            idx = self.agent_name_to_index[agent]
+            aircraft = self.aircraft_by_agent[agent]
             commanded_turn_rate = float(
                 commanded_action_vector[idx] * aircraft.dynamics.max_turn_rate
             )
@@ -667,6 +761,7 @@ class MultiUAVParallelEnv(ParallelEnv):
                 np.linalg.norm(self._local_pos_cache[idx] - self._prev_local_cache[idx])
             )
             self._segment_path_length[idx] += step_distance
+            best_improvement = 0.0
             if aircraft.waypoint_manager.current_waypoint is not None:
                 dist_before = float(
                     np.linalg.norm(self._wp_local_cache[idx] - self._prev_local_cache[idx])
@@ -683,6 +778,7 @@ class MultiUAVParallelEnv(ParallelEnv):
                     distance_to_wp=dist_before,
                 )
                 self._sync_waypoint_circling_tracking(agent)
+                started_circling_this_step = False
                 closest_before = float(
                     min(self._closest_wp_distance[idx], dist_before)
                 )
@@ -733,7 +829,19 @@ class MultiUAVParallelEnv(ParallelEnv):
                 progress_terms.append(progress_term)
                 max_turn_rate = max(float(aircraft.dynamics.max_turn_rate), 1e-6)
                 turn_fraction = abs(float(aircraft.actual_turn_rate)) / max_turn_rate
-                if self._deconfliction_active[idx]:
+                reapproach_assisted = bool(
+                    self._waypoint_reapproach_active[idx]
+                    and not self._deconfliction_active[idx]
+                )
+                if reapproach_assisted:
+                    self._circling_active[idx] = False
+                    self._circling_stagnation_steps[idx] = 0
+                    self._circling_angular_travel[idx] = 0.0
+                    self._circling_relief_progress[idx] = 0
+                    waypoint_proximities.append(0.0)
+                    circling_scores.append(0.0)
+                    stagnation_scores.append(0.0)
+                elif self._deconfliction_active[idx]:
                     self._circling_active[idx] = False
                     self._circling_stagnation_steps[idx] = 0
                     self._circling_angular_travel[idx] = 0.0
@@ -793,6 +901,7 @@ class MultiUAVParallelEnv(ParallelEnv):
                         and turn_excess > 0.0
                         and stagnation_excess > 0.0
                     ):
+                        started_circling_this_step = not self._circling_active[idx]
                         self._circling_active[idx] = True
                         self._circling_relief_progress[idx] = 0
 
@@ -859,6 +968,7 @@ class MultiUAVParallelEnv(ParallelEnv):
                 aircraft.last_waypoint_hit_pos = current_wp.to_tuple()
                 aircraft.waypoint_manager.hit_waypoints.append(current_wp)
                 aircraft.waypoint_manager.advance()
+                self._clear_waypoint_reapproach(idx)
                 self._closest_wp_signature[idx] = None
                 self._closest_wp_distance[idx] = np.inf
                 self._circling_wp_signature[idx] = None
@@ -866,15 +976,38 @@ class MultiUAVParallelEnv(ParallelEnv):
                 self._circling_stagnation_steps[idx] = 0
                 self._circling_angular_travel[idx] = 0.0
                 self._circling_relief_progress[idx] = 0
-                self._segment_start_local[idx] = self._local_pos_cache[idx]
-                self._segment_start_heading[idx] = float(aircraft.heading)
-                self._segment_path_length[idx] = 0.0
-                self._reference_route_cache[idx] = None
-                self._route_progress_anchor[idx] = 0.0
+                self._reset_reference_route_progress(idx=idx, aircraft=aircraft)
+            else:
+                self._update_waypoint_reapproach_state(
+                    idx=idx,
+                    aircraft=aircraft,
+                    distance_to_wp=dist_after,
+                    best_improvement=best_improvement,
+                )
+
+            if (
+                current_wp is not None
+                and not self._waypoint_reapproach_active[idx]
+                and (
+                started_circling_this_step
+                or self._should_reset_waypoint_capture(
+                    idx=idx,
+                    aircraft=aircraft,
+                    distance_to_wp=dist_after,
+                    best_improvement=best_improvement,
+                )
+                )
+            ):
+                self._start_waypoint_reapproach(
+                    idx=idx,
+                    aircraft=aircraft,
+                    distance_to_wp=dist_after,
+                )
 
             if not aircraft.waypoint_manager.has_waypoints():
                 if self.randomized and self.refill_random_waypoints_on_completion:
                     self._assign_random_waypoints(aircraft)
+                    self._clear_waypoint_reapproach(idx)
                     self._closest_wp_signature[idx] = None
                     self._closest_wp_distance[idx] = np.inf
                     self._circling_wp_signature[idx] = None
@@ -882,14 +1015,11 @@ class MultiUAVParallelEnv(ParallelEnv):
                     self._circling_stagnation_steps[idx] = 0
                     self._circling_angular_travel[idx] = 0.0
                     self._circling_relief_progress[idx] = 0
-                    self._segment_start_local[idx] = self._local_pos_cache[idx]
-                    self._segment_start_heading[idx] = float(aircraft.heading)
-                    self._segment_path_length[idx] = 0.0
-                    self._reference_route_cache[idx] = None
-                    self._route_progress_anchor[idx] = 0.0
+                    self._reset_reference_route_progress(idx=idx, aircraft=aircraft)
                 else:
                     if self._completion_steps[idx] is None:
                         self._completion_steps[idx] = self.current_step
+                    self._clear_waypoint_reapproach(idx)
                     aircraft._enter_loiter()
 
             inside, soft_risk, outside_depth = self._boundary_status(agent)
@@ -904,6 +1034,7 @@ class MultiUAVParallelEnv(ParallelEnv):
                 self._was_outside[idx] = False
 
             if aircraft.waypoint_manager.current_waypoint is None:
+                self._clear_waypoint_reapproach(idx)
                 self._closest_wp_signature[idx] = None
                 self._closest_wp_distance[idx] = np.inf
                 self._circling_wp_signature[idx] = None
@@ -911,9 +1042,7 @@ class MultiUAVParallelEnv(ParallelEnv):
                 self._circling_stagnation_steps[idx] = 0
                 self._circling_angular_travel[idx] = 0.0
                 self._circling_relief_progress[idx] = 0
-                self._segment_start_local[idx] = self._local_pos_cache[idx]
-                self._segment_path_length[idx] = 0.0
-                self._route_progress_anchor[idx] = 0.0
+                self._reset_reference_route_progress(idx=idx, aircraft=aircraft)
 
         all_done = all(
             not self.aircraft_by_agent[agent].waypoint_manager.has_waypoints()
@@ -1007,6 +1136,85 @@ class MultiUAVParallelEnv(ParallelEnv):
             self._rng.integers(
                 self.mission_waypoint_count_min,
                 self.mission_waypoint_count_max + 1,
+            )
+        )
+
+    def _episode_assigned_waypoint_count(self) -> int:
+        return int(
+            sum(
+                aircraft.waypoint_manager.queue_size()
+                + (1 if aircraft.waypoint_manager.current_waypoint is not None else 0)
+                for aircraft in self.aircraft_by_agent.values()
+            )
+        )
+
+    def _episode_max_planned_route_distance_m(self) -> float:
+        if not self.aircraft_by_agent:
+            return 0.0
+        return float(
+            max(
+                planned_route_distance_m(
+                    aircraft,
+                    self.transformer,
+                )
+                for aircraft in self.aircraft_by_agent.values()
+            )
+        )
+
+    def _resolve_episode_max_steps(self, options: dict) -> int:
+        requested = options.get("max_steps")
+        if requested is not None:
+            assigned_waypoints = self._episode_assigned_waypoint_count()
+            max_route_distance_m = self._episode_max_planned_route_distance_m()
+            self._episode_timeout_assigned_waypoints = assigned_waypoints
+            self._episode_timeout_reference_waypoints = assigned_waypoints
+            self._episode_timeout_max_route_distance_m = max_route_distance_m
+            self._episode_timeout_reference_route_distance_m = max_route_distance_m
+            return max(int(requested), 1)
+
+        assigned_waypoints = self._episode_assigned_waypoint_count()
+        max_route_distance_m = self._episode_max_planned_route_distance_m()
+        active_agents = max(len(self.agents), 1)
+        reference_waypoints = self.timeout_reference_waypoints
+        if reference_waypoints is None:
+            reference_waypoints = max(self.mission_waypoint_count, 1) * active_agents
+        reference_route_distance_m = self.timeout_reference_route_distance_m
+        if reference_route_distance_m is None:
+            reference_route_distance_m = max_route_distance_m
+        self._episode_timeout_assigned_waypoints = assigned_waypoints
+        self._episode_timeout_reference_waypoints = int(reference_waypoints)
+        self._episode_timeout_max_route_distance_m = float(max_route_distance_m)
+        self._episode_timeout_reference_route_distance_m = float(
+            reference_route_distance_m
+        )
+
+        episode_max_steps = self.base_max_steps
+        if (
+            self.timeout_scale_with_mission_size
+            and self.timeout_steps_per_additional_waypoint > 0
+        ):
+            extra_waypoints = max(assigned_waypoints - int(reference_waypoints), 0)
+            episode_max_steps += (
+                extra_waypoints * self.timeout_steps_per_additional_waypoint
+            )
+        if (
+            self.timeout_scale_with_route_distance
+            and self.timeout_steps_per_additional_route_km > 0.0
+        ):
+            extra_route_distance_m = max(
+                max_route_distance_m - float(reference_route_distance_m),
+                0.0,
+            )
+            episode_max_steps += int(
+                np.ceil(
+                    (extra_route_distance_m / 1000.0)
+                    * self.timeout_steps_per_additional_route_km
+                )
+            )
+        return int(
+            min(
+                max(episode_max_steps, self.base_max_steps),
+                self.timeout_max_steps,
             )
         )
 
@@ -1370,6 +1578,218 @@ class MultiUAVParallelEnv(ParallelEnv):
         self._circling_stagnation_steps[idx] = 0
         self._circling_angular_travel[idx] = 0.0
         self._circling_relief_progress[idx] = 0
+
+    def _reset_reference_route_progress(
+        self,
+        *,
+        idx: int,
+        aircraft: FixedWingAircraft,
+    ) -> None:
+        self._segment_start_local[idx] = self._local_pos_cache[idx]
+        self._segment_start_heading[idx] = float(aircraft.heading)
+        self._segment_path_length[idx] = 0.0
+        self._reference_route_cache[idx] = None
+        self._route_progress_anchor[idx] = 0.0
+
+    def _clear_waypoint_reapproach(self, idx: int) -> None:
+        self._waypoint_reapproach_active[idx] = False
+        self._waypoint_reapproach_hold_remaining[idx] = 0
+        self._waypoint_reapproach_release_distance[idx] = 0.0
+
+    def _should_apply_waypoint_reapproach_assist(
+        self,
+        *,
+        idx: int,
+        aircraft: FixedWingAircraft,
+    ) -> bool:
+        if not self._waypoint_reapproach_active[idx]:
+            return False
+        if (
+            aircraft.waypoint_manager.current_waypoint is None
+            or aircraft.flight_mode == FlightMode.LOITERING
+        ):
+            self._clear_waypoint_reapproach(idx)
+            return False
+        return not self._deconfliction_active[idx]
+
+    def _should_reset_waypoint_capture(
+        self,
+        *,
+        idx: int,
+        aircraft: FixedWingAircraft,
+        distance_to_wp: float,
+        best_improvement: float,
+    ) -> bool:
+        waypoint = aircraft.waypoint_manager.current_waypoint
+        if waypoint is None or self._deconfliction_active[idx]:
+            return False
+
+        arrival_threshold = max(
+            float(aircraft.waypoint_manager.arrival_threshold),
+            1e-6,
+        )
+        if distance_to_wp <= arrival_threshold:
+            return False
+
+        turning_radius = max(float(aircraft.dynamics.turning_radius), 1.0)
+        close_capture_dist = max(
+            turning_radius * 1.5,
+            arrival_threshold * 2.5,
+            float(aircraft.dynamics.cruise_speed) * self.dt * 2.0,
+        )
+        if distance_to_wp > close_capture_dist:
+            return False
+        if best_improvement > self.stagnation_progress_epsilon_m:
+            return False
+        if int(self._circling_stagnation_steps[idx]) < max(
+            4,
+            self.stagnation_step_threshold // 2,
+        ):
+            return False
+
+        rel_wp = np.asarray(
+            self._wp_local_cache[idx] - self._local_pos_cache[idx],
+            dtype=np.float32,
+        )
+        rel_bearing_wp = wrap_angle(
+            float(np.arctan2(rel_wp[0], rel_wp[1])) - float(aircraft.heading)
+        )
+        left_margin, right_margin = turn_circle_feasibility_features(
+            pos_local=self._local_pos_cache[idx],
+            wp_local=self._wp_local_cache[idx],
+            heading=float(aircraft.heading),
+            turning_radius=turning_radius,
+        )
+        constrained_capture = min(left_margin, right_margin) < -0.05
+        badly_misaligned = abs(rel_bearing_wp) >= (np.pi * 0.35)
+        overshot_waypoint = float(np.cos(rel_bearing_wp)) < 0.35
+        return bool(
+            (constrained_capture and badly_misaligned)
+            or overshot_waypoint
+        )
+
+    def _should_release_waypoint_reapproach(
+        self,
+        *,
+        idx: int,
+        aircraft: FixedWingAircraft,
+        distance_to_wp: float,
+        best_improvement: float,
+    ) -> bool:
+        waypoint = aircraft.waypoint_manager.current_waypoint
+        if waypoint is None:
+            return True
+
+        arrival_threshold = max(
+            float(aircraft.waypoint_manager.arrival_threshold),
+            1e-6,
+        )
+        turning_radius = max(float(aircraft.dynamics.turning_radius), 1.0)
+        release_distance = max(
+            float(self._waypoint_reapproach_release_distance[idx]),
+            turning_radius * self.waypoint_reapproach_release_distance_scale,
+            arrival_threshold * self.waypoint_reapproach_release_arrival_scale,
+        )
+        if distance_to_wp >= release_distance:
+            return True
+
+        rel_wp = np.asarray(
+            self._wp_local_cache[idx] - self._local_pos_cache[idx],
+            dtype=np.float32,
+        )
+        rel_bearing_wp = wrap_angle(
+            float(np.arctan2(rel_wp[0], rel_wp[1])) - float(aircraft.heading)
+        )
+        left_margin, right_margin = turn_circle_feasibility_features(
+            pos_local=self._local_pos_cache[idx],
+            wp_local=self._wp_local_cache[idx],
+            heading=float(aircraft.heading),
+            turning_radius=turning_radius,
+        )
+        constrained_capture = min(left_margin, right_margin) < -0.02
+        aligned_for_retry = abs(rel_bearing_wp) <= (np.pi * 0.28)
+        facing_waypoint = float(np.cos(rel_bearing_wp)) > 0.45
+        return bool(
+            best_improvement >= self.circling_progress_reset_m
+            and distance_to_wp > (arrival_threshold * 1.5)
+            and aligned_for_retry
+            and facing_waypoint
+            and not constrained_capture
+        )
+
+    def _update_waypoint_reapproach_state(
+        self,
+        *,
+        idx: int,
+        aircraft: FixedWingAircraft,
+        distance_to_wp: float,
+        best_improvement: float,
+    ) -> None:
+        if not self._waypoint_reapproach_active[idx]:
+            return
+        if (
+            aircraft.waypoint_manager.current_waypoint is None
+            or aircraft.flight_mode == FlightMode.LOITERING
+        ):
+            self._clear_waypoint_reapproach(idx)
+            return
+        if self._deconfliction_active[idx]:
+            return
+
+        if self._waypoint_reapproach_hold_remaining[idx] > 0:
+            self._waypoint_reapproach_hold_remaining[idx] -= 1
+            if self._waypoint_reapproach_hold_remaining[idx] > 0:
+                return
+
+        if self._should_release_waypoint_reapproach(
+            idx=idx,
+            aircraft=aircraft,
+            distance_to_wp=distance_to_wp,
+            best_improvement=best_improvement,
+        ):
+            self._clear_waypoint_reapproach(idx)
+
+    def _start_waypoint_reapproach(
+        self,
+        *,
+        idx: int,
+        aircraft: FixedWingAircraft,
+        distance_to_wp: float,
+    ) -> None:
+        waypoint = aircraft.waypoint_manager.current_waypoint
+        if waypoint is None:
+            return
+
+        if not self._waypoint_reapproach_active[idx]:
+            self._waypoint_reapproach_events_total[idx] += 1
+        if self._circling_active[idx]:
+            self._circling_breakouts_total[idx] += 1
+        arrival_threshold = max(
+            float(aircraft.waypoint_manager.arrival_threshold),
+            1e-6,
+        )
+        turning_radius = max(float(aircraft.dynamics.turning_radius), 1.0)
+        self._waypoint_reapproach_active[idx] = True
+        self._waypoint_reapproach_hold_remaining[idx] = (
+            self.waypoint_reapproach_min_steps
+        )
+        self._waypoint_reapproach_release_distance[idx] = float(
+            max(
+                distance_to_wp + (0.75 * turning_radius),
+                turning_radius * self.waypoint_reapproach_release_distance_scale,
+                arrival_threshold * self.waypoint_reapproach_release_arrival_scale,
+            )
+        )
+        self._closest_wp_signature[idx] = (
+            float(waypoint.latitude),
+            float(waypoint.longitude),
+        )
+        self._closest_wp_distance[idx] = float(max(distance_to_wp, 0.0))
+        self._circling_active[idx] = False
+        self._circling_stagnation_steps[idx] = 0
+        self._circling_angular_travel[idx] = 0.0
+        self._circling_relief_progress[idx] = 0
+        self._reset_reference_route_progress(idx=idx, aircraft=aircraft)
 
     def _update_pairwise_distance_cache(self):
         self._dx_matrix.fill(0.0)
@@ -2544,6 +2964,11 @@ class MultiUAVParallelEnv(ParallelEnv):
             ),
             "policy_trainable_fraction": policy_trainable_fraction,
             "sim_time_s": float(self.current_step * self.dt),
+            "max_steps": int(self.max_steps),
+            "base_max_steps": int(self.base_max_steps),
+            "timeout_max_route_distance_m": float(
+                self._episode_timeout_max_route_distance_m
+            ),
             "team_reward_total": float(self._episode_reward_total),
             "state": self.state(),
         }
@@ -2682,6 +3107,12 @@ class MultiUAVParallelEnv(ParallelEnv):
                     "deconfliction_steps": int(self._deconfliction_steps_total[idx]),
                     "circling_steps": int(self._circling_steps_total[idx]),
                     "circling_breakouts": int(self._circling_breakouts_total[idx]),
+                    "waypoint_reapproach_steps": int(
+                        self._waypoint_reapproach_steps_total[idx]
+                    ),
+                    "waypoint_reapproach_events": int(
+                        self._waypoint_reapproach_events_total[idx]
+                    ),
                     **motion_metrics,
                 }
             )
@@ -2727,12 +3158,31 @@ class MultiUAVParallelEnv(ParallelEnv):
         deconfliction_steps_total = int(np.sum(self._deconfliction_steps_total))
         circling_steps_total = int(np.sum(self._circling_steps_total))
         circling_breakouts_total = int(np.sum(self._circling_breakouts_total))
+        waypoint_reapproach_steps_total = int(
+            np.sum(self._waypoint_reapproach_steps_total)
+        )
+        waypoint_reapproach_events_total = int(
+            np.sum(self._waypoint_reapproach_events_total)
+        )
 
         return {
             "telemetry": telemetry,
             "mission_stats": mission_stats,
             "episode_summary": {
                 "steps": int(self.current_step),
+                "max_steps": int(self.max_steps),
+                "base_max_steps": int(self.base_max_steps),
+                "timeout_scaled": bool(self.max_steps != self.base_max_steps),
+                "timeout_assigned_waypoints": int(self._episode_timeout_assigned_waypoints),
+                "timeout_reference_waypoints": int(
+                    self._episode_timeout_reference_waypoints
+                ),
+                "timeout_max_route_distance_m": float(
+                    self._episode_timeout_max_route_distance_m
+                ),
+                "timeout_reference_route_distance_m": float(
+                    self._episode_timeout_reference_route_distance_m
+                ),
                 "sim_time_s": sim_time_s,
                 "termination_reason": self._termination_reason,
                 "uavs_completed": int(
@@ -2764,6 +3214,8 @@ class MultiUAVParallelEnv(ParallelEnv):
                 "deconfliction_time_s": float(deconfliction_steps_total * self.dt),
                 "circling_steps_total": circling_steps_total,
                 "circling_breakouts_total": circling_breakouts_total,
+                "waypoint_reapproach_steps_total": waypoint_reapproach_steps_total,
+                "waypoint_reapproach_events_total": waypoint_reapproach_events_total,
                 "team_reward_total": float(self._episode_reward_total),
             },
             "reward_breakdown": {

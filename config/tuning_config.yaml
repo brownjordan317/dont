@@ -2,7 +2,13 @@ tuning:
   env:
     shared:
       dt: 0.3
-      max_steps: 2500
+      max_steps: 3000
+      timeout_scale_with_mission_size: true
+      timeout_steps_per_additional_waypoint: 12
+      timeout_scale_with_route_distance: true
+      timeout_steps_per_additional_route_km: 120
+      timeout_max_steps: 4500
+      timeout_reference_route_distance_m: 2800
       obs_stack_size: 8
       waypoint_arrival_radius: 30
       caution_dist: 50
@@ -46,12 +52,12 @@ tuning:
 
   rewards:
     waypoint_hit_reward: 140.0
-    completion_bonus: 1400.0
+    completion_bonus: 1800.0
     waypoint_proximity_bonus: 80.0
-    progress_reward: 24.0
+    progress_reward: 32.0
     geofence_penalty: 28.0
-    boundary_soft_penalty: 2.5
-    boundary_soft_growth_exponent: 1.35
+    boundary_soft_penalty: 1.2
+    boundary_soft_growth_exponent: 1.15
     geofence_growth_exponent: 1.35
     geofence_depth_cap: 1.0
     crash_penalty: 700.0
@@ -65,27 +71,30 @@ tuning:
     circling_relief_steps: 10
     circling_relief_turn_fraction: 0.3
     separation_margin_penalty: 3.0
-    separation_margin_ratio: 1.8
-    stagnation_penalty: 0.3
-    stagnation_step_threshold: 18
+    separation_margin_ratio: 1.6
+    stagnation_penalty: 0.45
+    stagnation_step_threshold: 12
     stagnation_progress_epsilon_m: 1.0
-    incomplete_mission_penalty: 400.0
+    incomplete_mission_penalty: 500.0
     existence_penalty: 0.03
 
   guidance:
     lookahead_time_s: 1.8
     min_lookahead_m: 20.0
     max_lookahead_m: 90.0
-    deconfliction_hold_steps: 8
+    deconfliction_hold_steps: 5
     route_commit_scale: 1.8
     turn_gain: 1.5
     turn_lookahead_scale: 0.9
     turn_radius_floor_scale: 1.0
-    boundary_buffer_ratio: 0.15
+    waypoint_reapproach_min_steps: 14
+    waypoint_reapproach_release_distance_scale: 2.4
+    waypoint_reapproach_release_arrival_scale: 3.5
+    boundary_buffer_ratio: 0.1
     caution_lookahead_time_s: 8.0
-    predicted_caution_weight: 0.6
-    deconfliction_progress_scale: 0.45
+    predicted_caution_weight: 0.5
+    deconfliction_progress_scale: 0.7
     head_on_conflict_weight: 0.5
     conflict_commit_activation: 0.2
-    conflict_commit_release_scale: 1.2
-    conflict_commit_release_pressure: 0.12
+    conflict_commit_release_scale: 1.35
+    conflict_commit_release_pressure: 0.18

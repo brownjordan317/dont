@@ -359,6 +359,27 @@ def create_test_environment(config):
     env = MultiUAVParallelEnv(
         dt=env_cfg["dt"],
         max_steps=env_cfg["max_steps"],
+        timeout_scale_with_mission_size=env_cfg.get(
+            "timeout_scale_with_mission_size",
+            False,
+        ),
+        timeout_steps_per_additional_waypoint=env_cfg.get(
+            "timeout_steps_per_additional_waypoint",
+            0,
+        ),
+        timeout_scale_with_route_distance=env_cfg.get(
+            "timeout_scale_with_route_distance",
+            False,
+        ),
+        timeout_steps_per_additional_route_km=env_cfg.get(
+            "timeout_steps_per_additional_route_km",
+            0.0,
+        ),
+        timeout_max_steps=env_cfg.get("timeout_max_steps"),
+        timeout_reference_waypoints=env_cfg.get("timeout_reference_waypoints"),
+        timeout_reference_route_distance_m=env_cfg.get(
+            "timeout_reference_route_distance_m"
+        ),
         boundary_margin=env_cfg["boundary_margin"],
         mission_waypoint_count=mission_waypoint_count,
         waypoint_arrival_radius=env_cfg.get(
@@ -951,8 +972,6 @@ def print_episode_report(total_reward, arrivals, total_waypoints, steps, truncat
 
 def test(config):
     test_cfg = config["test"]
-    tuning = get_tuning_section(config, "test")
-    env_cfg = tuning["env"]
 
     light_mode = not bool(test_cfg.get("save_visuals", False))
     if light_mode:
@@ -973,7 +992,7 @@ def test(config):
         env.reset()
     else:
         env.reset(options=reset_options)
-    max_steps = int(env_cfg["max_steps"])
+    max_steps = int(env.max_steps)
     deterministic = bool(test_cfg.get("deterministic", True))
 
     if light_mode:

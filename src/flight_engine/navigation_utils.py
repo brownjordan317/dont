@@ -76,6 +76,40 @@ def waypoint_positions_local(
     ]
 
 
+def route_distance_local(points_local: List[Tuple[float, float]]) -> float:
+    if len(points_local) < 2:
+        return 0.0
+    coords = np.asarray(points_local, dtype=np.float32)
+    return float(np.linalg.norm(np.diff(coords, axis=0), axis=1).sum())
+
+
+def planned_route_distance_m(
+    aircraft,
+    transformer: CoordinateTransformer,
+    *,
+    start_position: Optional[Tuple[float, float]] = None,
+) -> float:
+    if start_position is None:
+        if hasattr(aircraft, "initial_pos"):
+            start_position = aircraft.initial_pos.to_tuple()
+        else:
+            start_position = aircraft.position.to_tuple()
+
+    points = [start_position, *ordered_waypoint_tuples(aircraft)]
+    if len(points) < 2:
+        return 0.0
+
+    latitudes = [latitude for latitude, _ in points]
+    longitudes = [longitude for _, longitude in points]
+    x_vals, y_vals = transformer.geo_to_local(latitudes, longitudes)
+    return route_distance_local(
+        [
+            (float(x_value), float(y_value))
+            for x_value, y_value in zip(x_vals, y_vals)
+        ]
+    )
+
+
 def nearest_point_on_polyline(
     polyline: np.ndarray,
     point_local: np.ndarray,

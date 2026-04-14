@@ -1,11 +1,7 @@
 from typing import Tuple
 import numpy as np
 
-# ============================================================================
-# FLIGHT DYNAMICS
-# ============================================================================
-
-class FlightDynamics:  
+class FlightDynamics:
     def __init__(
         self,
         turning_radius: float,
@@ -36,26 +32,27 @@ class FlightDynamics:
         return float(
             np.clip(resolved_turn_rate, -self.max_turn_rate, self.max_turn_rate)
         )
-    
-    def compute_arc_motion(self, x: float, y: float, heading: float, 
-                          turn_amount: float) -> Tuple[float, float]:
-        """Compute new position after turning"""
-        R = self.turning_radius
-        
-        # Determine turn center
-        if turn_amount > 0:  # Left turn
-            center_x = x - R * np.sin(heading)
-            center_y = y + R * np.cos(heading)
-        else:  # Right turn
-            center_x = x + R * np.sin(heading)
-            center_y = y - R * np.cos(heading)
-        
-        # Calculate new position on arc
+
+    def compute_arc_motion(
+        self,
+        x: float,
+        y: float,
+        heading: float,
+        turn_amount: float,
+    ) -> Tuple[float, float]:
+        turn_radius = self.turning_radius
+
+        if turn_amount > 0:
+            center_x = x - turn_radius * np.sin(heading)
+            center_y = y + turn_radius * np.cos(heading)
+        else:
+            center_x = x + turn_radius * np.sin(heading)
+            center_y = y - turn_radius * np.cos(heading)
+
         current_angle = np.arctan2(y - center_y, x - center_x)
         new_angle = current_angle + turn_amount
-        
-        new_x = center_x + R * np.cos(new_angle)
-        new_y = center_y + R * np.sin(new_angle)
-        
+
+        new_x = center_x + turn_radius * np.cos(new_angle)
+        new_y = center_y + turn_radius * np.sin(new_angle)
+
         return new_x, new_y
-    

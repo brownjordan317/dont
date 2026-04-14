@@ -13,23 +13,13 @@ from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
 from config_utils import get_tuning_section
+from flight_engine.navigation_utils import planned_route_distance_m
 from mappo import MAPPOPolicy
 from mappo_runtime import validate_policy_env
 from pettingzoo_env import MultiUAVParallelEnv
 from test import resolve_device, run_light_episode
 
 console = Console()
-
-
-def route_distance_m(start, waypoints):
-    points = [start, *waypoints]
-    if len(points) < 2:
-        return 0.0
-
-    total = 0.0
-    for point_a, point_b in zip(points, points[1:]):
-        total += geopy_distance(point_a, point_b).meters
-    return float(total)
 
 
 def box_dimensions_m(top_left, bottom_right):
@@ -103,9 +93,10 @@ def build_mission_definition(env: MultiUAVParallelEnv, config: dict) -> dict:
     for agent in env.agents:
         aircraft = env.aircraft_by_agent[agent]
         mission_waypoints = ordered_waypoints(aircraft)
-        planned_distance = route_distance_m(
-            aircraft.initial_pos.to_tuple(),
-            mission_waypoints,
+        planned_distance = planned_route_distance_m(
+            aircraft,
+            env.transformer,
+            start_position=aircraft.initial_pos.to_tuple(),
         )
         total_planned_distance += planned_distance
         uav_records.append(
@@ -132,6 +123,13 @@ def build_mission_definition(env: MultiUAVParallelEnv, config: dict) -> dict:
         "box_height_m": float(height_m),
         "box_area_km2": float((width_m * height_m) / 1_000_000.0),
         "num_drones": len(uav_records),
+        "episode_max_steps": int(env.max_steps),
+        "base_max_steps": int(env.base_max_steps),
+        "timeout_scaled": bool(env.max_steps != env.base_max_steps),
+        "timeout_max_route_distance_m": float(env._episode_timeout_max_route_distance_m),
+        "timeout_reference_route_distance_m": float(
+            env._episode_timeout_reference_route_distance_m
+        ),
         "waypoints_per_drone": (
             float(sum(len(record["waypoints"]) for record in uav_records) / len(uav_records))
             if uav_records
@@ -139,6 +137,11 @@ def build_mission_definition(env: MultiUAVParallelEnv, config: dict) -> dict:
         ),
         "total_waypoints": int(sum(len(record["waypoints"]) for record in uav_records)),
         "planned_route_distance_m_total": float(total_planned_distance),
+        "planned_route_distance_m_max": (
+            float(max(record["planned_route_distance_m"] for record in uav_records))
+            if uav_records
+            else 0.0
+        ),
         "planned_route_distance_m_avg": (
             float(total_planned_distance / len(uav_records))
             if uav_records
@@ -215,6 +218,12 @@ def summarize_mission(
         "circling_steps_total": int(episode_summary.get("circling_steps_total", 0)),
         "circling_breakouts_total": int(
             episode_summary.get("circling_breakouts_total", 0)
+        ),
+        "waypoint_reapproach_steps_total": int(
+            episode_summary.get("waypoint_reapproach_steps_total", 0)
+        ),
+        "waypoint_reapproach_events_total": int(
+            episode_summary.get("waypoint_reapproach_events_total", 0)
         ),
         "duration_s": float(steps * dt),
         "reward_per_step": float(reward / steps) if steps else 0.0,
@@ -383,6 +392,27 @@ def eval(config):
     env = MultiUAVParallelEnv(
         dt=env_cfg["dt"],
         max_steps=env_cfg["max_steps"],
+        timeout_scale_with_mission_size=env_cfg.get(
+            "timeout_scale_with_mission_size",
+            False,
+        ),
+        timeout_steps_per_additional_waypoint=env_cfg.get(
+            "timeout_steps_per_additional_waypoint",
+            0,
+        ),
+        timeout_scale_with_route_distance=env_cfg.get(
+            "timeout_scale_with_route_distance",
+            False,
+        ),
+        timeout_steps_per_additional_route_km=env_cfg.get(
+            "timeout_steps_per_additional_route_km",
+            0.0,
+        ),
+        timeout_max_steps=env_cfg.get("timeout_max_steps"),
+        timeout_reference_waypoints=env_cfg.get("timeout_reference_waypoints"),
+        timeout_reference_route_distance_m=env_cfg.get(
+            "timeout_reference_route_distance_m"
+        ),
         boundary_margin=env_cfg["boundary_margin"],
         mission_waypoint_count=config["drone_settings"]["num_wps_per_drone"],
         waypoint_arrival_radius=env_cfg.get("waypoint_arrival_radius", 30.0),
@@ -448,7 +478,7 @@ def eval(config):
                 steps, reward, _, _, terminated, truncated, metrics = run_light_episode(
                     policy,
                     env,
-                    int(env_cfg["max_steps"]),
+                    int(env.max_steps),
                     label="MAPPO",
                     deterministic=deterministic,
                     show_progress=False,
