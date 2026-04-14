@@ -1,14 +1,17 @@
 # DON&T — Deconflicted Optimal Navigation & Trajectory-learning
 
-This repository is now focused on a single MARL path: MAPPO for fixed-wing UAV deconfliction and waypoint following.
+This repository trains and evaluates a shared MAPPO policy for fixed-wing UAV swarm deconfliction, waypoint following, and boundary-aware navigation.
 
-The training setup is intentionally stationary. MAPPO does not use curriculum here; it trains on randomized multi-agent missions sampled from the ranges in `config/tuning_config.yaml`.
+The current setup is intentionally stationary. Training does not use curriculum; it samples randomized multi-UAV missions from the ranges in `config/tuning_config.yaml`.
 
 ## What It Does
 
-- Trains a shared MAPPO policy with a centralized critic
-- Samples 1–5 UAV missions inside randomized square flight boxes
-- Tests a trained checkpoint on hand-authored missions
+- Trains one shared MAPPO actor with a centralized critic
+- Samples randomized 2-5 UAV missions with 6-20 waypoints per UAV during training
+- Uses reference-guided warm-start supervision before PPO updates take over
+- Applies runtime waypoint re-approach assist when a UAV blows a tight pass and starts orbiting
+- Scales episode timeout by both mission size and planned route distance
+- Tests a trained checkpoint on manual or generated missions
 - Benchmarks a trained checkpoint across randomized evaluation missions
 - Produces optional MP4 rollouts for visual inspection
 
@@ -42,7 +45,7 @@ config/
 
 ## Quick Start
 
-All entrypoints still run through `deconfliction_factory.py`:
+All modes run through `deconfliction_factory.py`:
 
 ```bash
 python src/deconfliction_factory.py --mode train
@@ -62,29 +65,49 @@ make eval
 
 `config/train_config.yaml`
 
-- Optimizer, rollout, checkpoint, latest-checkpoint, and TensorBoard settings for MAPPO
-- No curriculum settings
+- PPO optimizer, rollout, warm-start, checkpoint, and TensorBoard settings
+- `latest_model_name` controls the stable checkpoint path used by test and eval
 
 `config/tuning_config.yaml`
 
-- Shared environment limits like `min_agents`, `max_agents`, and collision thresholds
-- Training distribution ranges such as `train.box_min_m` and `train.box_max_m`
-- Reward shaping, hard-safety, anti-circling, and guidance knobs
+- Shared environment limits such as agent count, safety thresholds, and map ranges
+- Training mission sampling ranges
+- Reward shaping for progress, completion, safety, boundary pressure, circling, and stagnation
+- Guidance settings for deconfliction and waypoint re-approach behavior
 
 `config/test_config.yaml`
 
 - MAPPO checkpoint path
-- Manual or generated missions for visual/manual inspection
+- Manual mission definitions or generated mission settings
+- Video export controls
 
 `config/eval_config.yaml`
 
 - MAPPO checkpoint path
-- Number of random benchmark missions
-- Random benchmark mission size and UAV count controls
+- Number of randomized benchmark missions
+- Evaluation mission size controls
 
 ## Training
 
-Training saves checkpoints into `train.save_dir` as:
+Training currently uses:
+
+- `32` parallel environments
+- `10,000,000` total timesteps
+- reference warm-start before PPO updates
+- randomized rectangular flight boxes from `500 m` to `1800 m`
+- randomized training missions with `2-5` UAVs and `6-20` waypoints per UAV
+
+Episode timeout is not fixed per mission anymore. The environment starts from `tuning.env.shared.max_steps` and can scale upward using:
+
+- assigned waypoint count
+- longest planned route distance
+- `timeout_max_steps` as a hard cap
+
+This helps large missions avoid timing out simply because they sampled more work.
+
+### Checkpoints
+
+Training saves checkpoints into `train.save_dir`:
 
 ```text
 models_mappo/
@@ -94,25 +117,82 @@ models_mappo/
 └── mappo_uav_policy.pt
 ```
 
-`mappo_uav_policy_latest.pt` is refreshed during training using `train.latest_checkpoint_interval`, so test mode can keep pointing at one stable checkpoint path.
+`mappo_uav_policy_latest.pt` is refreshed during training using `train.latest_checkpoint_interval`.
+
+Important: periodic checkpoints are now written after the PPO optimizer step, so `*_latest.pt` reflects the newest trained weights rather than a pre-update snapshot from the same timestep.
 
 `Ctrl+C` writes an `_interrupted.pt` checkpoint before exiting.
 
-TensorBoard logs are written under `train.tensorboard.log_dir`. By default, each training launch gets its own timestamped subdirectory, and `latest_run.txt` points to the newest one. After installing the updated requirements, you can inspect runs with:
+### TensorBoard
+
+TensorBoard logs are written under `train.tensorboard.log_dir`. By default, each training launch gets its own timestamped subdirectory, and `latest_run.txt` points to the newest run.
+
+Launch TensorBoard with:
 
 ```bash
 tensorboard --logdir models_mappo/tensorboard
 ```
 
+Useful training curves include:
+
+- `train/mean_return_50`
+- `train/completion_rate_50`
+- `train/crash_rate_50`
+- `train/timeout_rate_50`
+- `train/waypoint_throughput_per_min_50`
+- `train/geofence_outside_steps_50`
+- `train/circling_steps_50`
+- `policy/reference_mae`
+
+Useful episode-level diagnostics include:
+
+- `episode/circling_steps`
+- `episode/circling_breakouts`
+- `episode/waypoint_reapproach_steps`
+- `episode/waypoint_reapproach_events`
+- `episode/deconfliction_time_s`
+- `episode/geofence_outside_steps`
+
+## Waypoint Re-approach
+
+The environment includes a runtime waypoint re-approach assist for fixed-wing geometry failures.
+
+If a UAV gets too close to a waypoint, cannot capture it cleanly within its turn limits, and starts stalling or circling, the environment:
+
+- resets the local reference route from the aircraft's current state
+- temporarily overrides the executed turn command with the reference breakout/rejoin command
+- keeps that assist active for a short minimum window
+- releases control once the aircraft has opened the geometry and can make a sane inbound pass again
+
+Those assisted steps are masked out of the PPO actor loss so the policy is not trained as if it chose the override itself.
+
 ## Testing
 
-Test mode runs the MAPPO checkpoint in `config/test_config.yaml` against either manual missions or generated missions, depending on `test.mission_mode`.
+Test mode runs the checkpoint in `config/test_config.yaml` against either:
 
-- Set `save_visuals: false` for a fast stats-only run
-- Set `save_visuals: true` to also export an MP4 into `reports/`
+- `mission_mode: "missions"` for hand-authored scenarios
+- `mission_mode: "gen_mission"` for generated missions
+
+Useful switches:
+
+- `save_visuals: false` for a fast stats-only run
+- `save_visuals: true` to export plots and, if enabled, an MP4 under `reports/`
+- `model_path: "models_mappo/mappo_uav_policy_latest.pt"` to keep testing the rolling latest checkpoint
 
 ## Evaluation
 
-Eval mode benchmarks one MAPPO checkpoint over randomized missions and writes a summary JSON to `results/eval_results.json`.
+Eval mode benchmarks one checkpoint over randomized missions and writes results to `results/eval_results.json`.
 
-The benchmark currently reports reward, completion, crash rate, safety interventions, and minimum separation statistics.
+The evaluation summary now includes more than reward alone. It records mission-success and behavior metrics such as:
+
+- waypoint completion rate
+- crash and timeout outcomes
+- waypoint throughput
+- geofence exits and outside steps
+- minimum pairwise separation
+- deconfliction time
+- circling steps and circling breakouts
+- waypoint re-approach steps and events
+- flown distance versus planned route distance
+
+This makes it easier to spot policies that achieve reward by circling, stalling, or drifting instead of completing missions cleanly.
