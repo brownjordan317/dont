@@ -14,10 +14,11 @@ from rich.table import Table
 
 from config_utils import get_tuning_section
 from flight_engine.navigation_utils import planned_route_distance_m
+from inference_setup import resolve_device
 from mappo import MAPPOPolicy
 from mappo_runtime import validate_policy_env
 from pettingzoo_env import MultiUAVParallelEnv
-from test import resolve_device, run_light_episode
+from test import run_light_episode
 
 console = Console()
 

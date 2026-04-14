@@ -1,5 +1,5 @@
 import numpy as np
-from typing import List, Optional
+from typing import Iterable, List, Optional
 
 from flight_engine.helpers import wrap_angle, Position, FlightMode
 from flight_engine.trans_coorders import CoordinateTransformer
@@ -60,6 +60,26 @@ class FixedWingAircraft:
             if not isinstance(wp, Position):
                 wp = Position(*wp)
             self.add_wp(wp)
+
+    def append_waypoints(self, waypoints: Iterable[Position]):
+        for waypoint in waypoints:
+            self.add_wp(waypoint)
+
+    def replace_waypoint_queue(
+        self,
+        waypoints: Iterable[Position],
+        *,
+        replace_current: bool = False,
+    ):
+        self.waypoint_manager.replace_queue(
+            waypoints,
+            replace_current=replace_current,
+        )
+        if self.waypoint_manager.has_waypoints():
+            self.flight_mode = FlightMode.NAVIGATING
+            self.loiter_center = None
+        else:
+            self._enter_loiter()
 
     def update_simple(
         self,

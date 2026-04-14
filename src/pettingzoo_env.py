@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 from itertools import combinations
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 from gymnasium import spaces
@@ -72,6 +72,7 @@ class MultiUAVParallelEnv(ParallelEnv):
         manual_missions: Optional[Dict[str, dict]] = None,
         terminate_on_all_waypoints_complete: bool = True,
         refill_random_waypoints_on_completion: bool = False,
+        allow_live_waypoint_updates: bool = False,
     ):
         super().__init__()
         flight_config = flight_config or {}
@@ -140,6 +141,7 @@ class MultiUAVParallelEnv(ParallelEnv):
         self.refill_random_waypoints_on_completion = bool(
             refill_random_waypoints_on_completion
         )
+        self.allow_live_waypoint_updates = bool(allow_live_waypoint_updates)
 
         self.possible_agents = [
             f"UAV-{idx + 1}"
@@ -1125,6 +1127,208 @@ class MultiUAVParallelEnv(ParallelEnv):
 
     def close(self):
         return None
+
+    def runtime_agent_snapshot(self, agent: str) -> dict:
+        aircraft = self._runtime_snapshot_aircraft(agent)
+        latitude = float(aircraft.position.latitude)
+        longitude = float(aircraft.position.longitude)
+        local_x, local_y = self.transformer.geo_to_local(latitude, longitude)
+        current_waypoint = aircraft.waypoint_manager.current_waypoint
+        queued_waypoints = [
+            waypoint.to_tuple()
+            for waypoint in aircraft.waypoint_manager.waypoint_queue
+        ]
+        heading_rad = float(aircraft.heading)
+        bearing_deg = float(np.degrees(heading_rad) % 360.0)
+        return {
+            "agent": agent,
+            "active": bool(agent in self.agents),
+            "mode": aircraft.flight_mode.value,
+            "flight_mode": aircraft.flight_mode.value,
+            "position": {
+                "lat": latitude,
+                "lon": longitude,
+            },
+            "position_latlon": (latitude, longitude),
+            "local_position_m": {
+                "x": float(local_x),
+                "y": float(local_y),
+            },
+            "heading_rad": heading_rad,
+            "heading_deg": float(np.degrees(heading_rad)),
+            "bearing_deg": bearing_deg,
+            "current_waypoint": (
+                current_waypoint.to_tuple()
+                if current_waypoint is not None
+                else None
+            ),
+            "queued_waypoints": queued_waypoints,
+            "completed_waypoints": int(len(aircraft.waypoint_manager.hit_waypoints)),
+            "remaining_waypoints": int(
+                len(queued_waypoints)
+                + (1 if current_waypoint is not None else 0)
+            ),
+            "distance_traveled_m": float(aircraft.distance_traveled),
+            "actual_turn_rate_rad_s": float(aircraft.actual_turn_rate),
+            "desired_turn_rate_rad_s": float(aircraft.desired_turn_rate),
+            "current_step": int(self.current_step),
+            "max_steps": int(self.max_steps),
+            "sim_time_s": float(self.current_step * self.dt),
+        }
+
+    def runtime_agent_snapshots(self) -> dict[str, dict]:
+        return {
+            agent: self.runtime_agent_snapshot(agent)
+            for agent in sorted(self.aircraft_by_agent)
+        }
+
+    def runtime_waypoint_snapshot(self, agent: str) -> dict:
+        return self.runtime_agent_snapshot(agent)
+
+    def append_runtime_waypoints(
+        self,
+        agent: str,
+        waypoints: Any,
+    ) -> dict:
+        aircraft = self._runtime_waypoint_aircraft(agent)
+        positions = self._coerce_runtime_waypoint_list(waypoints)
+        if positions:
+            aircraft.append_waypoints(positions)
+            self._refresh_after_runtime_waypoint_update(agent)
+        return self.runtime_waypoint_snapshot(agent)
+
+    def replace_runtime_waypoint_queue(
+        self,
+        agent: str,
+        waypoints: Any,
+        *,
+        replace_current: bool = False,
+    ) -> dict:
+        aircraft = self._runtime_waypoint_aircraft(agent)
+        positions = self._coerce_runtime_waypoint_list(waypoints)
+        aircraft.replace_waypoint_queue(
+            positions,
+            replace_current=replace_current,
+        )
+        self._refresh_after_runtime_waypoint_update(agent)
+        return self.runtime_waypoint_snapshot(agent)
+
+    def _runtime_waypoint_aircraft(self, agent: str) -> FixedWingAircraft:
+        if not self.allow_live_waypoint_updates:
+            raise RuntimeError(
+                "Live waypoint updates are disabled for this environment. "
+                "Use the trained-policy runtime path to enable them."
+            )
+        if agent not in self.aircraft_by_agent or agent not in self.agents:
+            raise KeyError(
+                f"Agent {agent!r} is not active in the current episode."
+            )
+        return self.aircraft_by_agent[agent]
+
+    def _runtime_snapshot_aircraft(self, agent: str) -> FixedWingAircraft:
+        if not self.allow_live_waypoint_updates:
+            raise RuntimeError(
+                "Live state snapshots are disabled for this environment. "
+                "Use the trained-policy runtime path to enable them."
+            )
+        if agent not in self.aircraft_by_agent:
+            raise KeyError(
+                f"Agent {agent!r} is not available in the current runtime session."
+            )
+        return self.aircraft_by_agent[agent]
+
+    def _coerce_runtime_waypoint_list(self, waypoints: Any) -> List[Position]:
+        if waypoints is None:
+            raise TypeError("waypoints cannot be None")
+        if (
+            isinstance(waypoints, Position)
+            or isinstance(waypoints, dict)
+            or self._is_scalar_waypoint_pair(waypoints)
+        ):
+            raw_waypoints = [waypoints]
+        else:
+            raw_waypoints = list(waypoints)
+        return [
+            self._coerce_runtime_waypoint(waypoint)
+            for waypoint in raw_waypoints
+        ]
+
+    def _coerce_runtime_waypoint(self, waypoint: Any) -> Position:
+        if isinstance(waypoint, Position):
+            return Position(
+                float(waypoint.latitude),
+                float(waypoint.longitude),
+            )
+        if isinstance(waypoint, dict):
+            if "latitude" in waypoint and "longitude" in waypoint:
+                return Position(
+                    float(waypoint["latitude"]),
+                    float(waypoint["longitude"]),
+                )
+            if "lat" in waypoint and "lon" in waypoint:
+                return Position(
+                    float(waypoint["lat"]),
+                    float(waypoint["lon"]),
+                )
+            raise TypeError(
+                "Waypoint dicts must provide latitude/longitude or lat/lon keys."
+            )
+        if self._is_scalar_waypoint_pair(waypoint):
+            latitude, longitude = waypoint
+            return Position(float(latitude), float(longitude))
+        raise TypeError(
+            "Waypoints must be Position instances, (lat, lon) pairs, or "
+            "dicts with latitude/longitude keys."
+        )
+
+    def _is_scalar_waypoint_pair(self, waypoint: Any) -> bool:
+        if not isinstance(waypoint, (list, tuple, np.ndarray)):
+            return False
+        if len(waypoint) != 2:
+            return False
+        return bool(np.isscalar(waypoint[0]) and np.isscalar(waypoint[1]))
+
+    def _reset_runtime_waypoint_tracking(
+        self,
+        *,
+        idx: int,
+        aircraft: FixedWingAircraft,
+    ) -> None:
+        self._clear_waypoint_reapproach(idx)
+        self._closest_wp_signature[idx] = None
+        self._closest_wp_distance[idx] = np.inf
+        self._circling_wp_signature[idx] = None
+        self._circling_active[idx] = False
+        self._circling_stagnation_steps[idx] = 0
+        self._circling_angular_travel[idx] = 0.0
+        self._circling_relief_progress[idx] = 0
+        self._reset_reference_route_progress(idx=idx, aircraft=aircraft)
+
+    def _refresh_after_runtime_waypoint_update(self, agent: str) -> None:
+        aircraft = self.aircraft_by_agent[agent]
+        idx = self.agent_name_to_index[agent]
+        self._reset_runtime_waypoint_tracking(idx=idx, aircraft=aircraft)
+
+        if aircraft.waypoint_manager.has_waypoints():
+            self._completion_steps[idx] = None
+            aircraft.flight_mode = FlightMode.NAVIGATING
+            aircraft.loiter_center = None
+        else:
+            if self._completion_steps[idx] is None:
+                self._completion_steps[idx] = self.current_step
+            aircraft._enter_loiter()
+
+        self._sync_local_caches()
+        self._sync_waypoint_progress_tracking(agent)
+        self._sync_waypoint_circling_tracking(agent)
+        self._refresh_route_guidance_cache()
+        refreshed_max_steps = self._resolve_episode_max_steps({})
+        self.max_steps = max(
+            int(self.max_steps),
+            int(refreshed_max_steps),
+            int(self.current_step) + 1,
+        )
+        self._update_obs_cache(fill_history=True)
 
     def _resolve_mission_waypoint_count(self, options: dict) -> int:
         requested = options.get("mission_waypoint_count")
@@ -2946,7 +3150,7 @@ class MultiUAVParallelEnv(ParallelEnv):
             if active_indices
             else 0.0
         )
-        return {
+        info = {
             "waypoints_hit": cumulative_waypoints_hit,
             "waypoints_hit_step": int(waypoints_hit),
             "crashed": bool(self._crashed),
@@ -2972,6 +3176,9 @@ class MultiUAVParallelEnv(ParallelEnv):
             "team_reward_total": float(self._episode_reward_total),
             "state": self.state(),
         }
+        if self.allow_live_waypoint_updates:
+            info["agent_states"] = self.runtime_agent_snapshots()
+        return info
 
     def get_episode_metrics(self) -> dict:
         def summarize_pairs(pairs: List[Tuple[str, str]]):

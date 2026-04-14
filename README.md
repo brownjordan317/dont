@@ -12,6 +12,7 @@ The current setup is intentionally stationary. Training does not use curriculum;
 - Applies runtime waypoint re-approach assist when a UAV blows a tight pass and starts orbiting
 - Scales episode timeout by both mission size and planned route distance
 - Tests a trained checkpoint on manual or generated missions
+- Supports live waypoint appends and queue replacement through a trained-policy runtime wrapper
 - Benchmarks a trained checkpoint across randomized evaluation missions
 - Produces optional MP4 rollouts for visual inspection
 
@@ -31,8 +32,10 @@ src/
 ├── train.py                   # MAPPO training loop
 ├── test.py                    # MAPPO inference + optional video export
 ├── eval.py                    # MAPPO random-mission benchmark
+├── inference_setup.py         # Shared test/runtime environment setup helpers
 ├── mappo.py                   # Policy, critic, normalization, GAE helpers
 ├── mappo_runtime.py           # Shared rollout/inference helpers
+├── trained_policy_runtime.py  # Deployment-style trained-policy runtime wrapper
 ├── pettingzoo_env.py          # Parallel multi-UAV environment
 └── flight_engine/             # Aircraft dynamics and geometry helpers
 
@@ -178,6 +181,85 @@ Useful switches:
 - `save_visuals: false` for a fast stats-only run
 - `save_visuals: true` to export plots and, if enabled, an MP4 under `reports/`
 - `model_path: "models_mappo/mappo_uav_policy_latest.pt"` to keep testing the rolling latest checkpoint
+
+Test mode keeps the mission definition fixed for the episode. Live waypoint mutation is not enabled there.
+
+## Trained Runtime
+
+Live waypoint edits are available only through `src/trained_policy_runtime.py`, which is intended for deployment or external integration around an already-trained checkpoint.
+
+It is not enabled in:
+
+- training
+- normal `test` mode
+- `eval` mode
+
+The runtime wrapper builds the same test-style environment, but with live waypoint updates enabled and episode termination on waypoint completion disabled. That means a UAV can finish its current queue, loiter, and later receive more waypoints without resetting the episode.
+
+When you launch your own integration from the repo root, run it with `PYTHONPATH=src` so the runtime modules resolve.
+
+Example:
+
+```python
+from trained_policy_runtime import TrainedPolicyRuntime
+
+runtime = TrainedPolicyRuntime.from_config()
+
+runtime.append_waypoints(
+    "UAV-1",
+    [(37.7751, -122.4179), (37.7758, -122.4168)],
+)
+
+runtime.replace_waypoint_queue(
+    "UAV-2",
+    [(37.7747, -122.4149), (37.7752, -122.4138)],
+)
+
+runtime.replace_waypoint_queue(
+    "UAV-3",
+    [(37.7739, -122.4185)],
+    replace_current=True,
+)
+
+while True:
+    result = runtime.step()
+    if result.terminated or result.truncated:
+        break
+```
+
+Live state access:
+
+```python
+uav_1 = runtime.agent_state("UAV-1")
+print(uav_1["position"]["lat"], uav_1["position"]["lon"])
+print(uav_1["bearing_deg"], uav_1["mode"])
+
+all_uavs = runtime.agent_states()
+
+result = runtime.step()
+live_states_after_step = result.agent_states
+```
+
+Queue semantics:
+
+- `append_waypoints(agent, [...])` keeps the current active waypoint and adds the new waypoints to the tail of the queue.
+- If that UAV has already completed its queue and is loitering, the first appended waypoint becomes the new current target and navigation resumes immediately.
+- `replace_waypoint_queue(agent, [...])` replaces only the queued backlog. The current active waypoint stays in place.
+- `replace_waypoint_queue(agent, [...], replace_current=True)` replaces the full remaining mission immediately, including the current active waypoint.
+- Passing an empty list with `replace_current=True` clears the remaining mission and the UAV returns to loiter.
+
+When a live update is applied, the runtime refreshes waypoint caches, reference guidance, observation history, and timeout accounting so the trained policy sees the new mission state on the next control step.
+
+State semantics:
+
+- `runtime.agent_state(agent)` returns the latest snapshot for one UAV.
+- `runtime.agent_states()` returns the latest snapshot for every UAV in the runtime session.
+- `result.agent_states` mirrors those snapshots immediately after each `runtime.step()`.
+- `position.lat` and `position.lon` are the live geodetic coordinates.
+- `bearing_deg` is the live compass bearing in `[0, 360)`.
+- `heading_rad` and `heading_deg` expose the same orientation in the simulator's signed heading convention.
+- `mode` and `flight_mode` expose the current flight mode such as `NAVIGATING` or `LOITERING`.
+- Snapshots remain available after a step that terminates or truncates the episode, so you can still inspect final aircraft state before calling `reset()`.
 
 ## Evaluation
 
