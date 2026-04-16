@@ -713,7 +713,7 @@ class MultiUAVParallelEnv(ParallelEnv):
             )
             aircraft.desired_turn_rate = commanded_turn_rate
             if aircraft.flight_mode == FlightMode.LOITERING:
-                loiter_turn_rate = aircraft.loiter_turn_rate_command()
+                loiter_turn_rate = aircraft.loiter_turn_rate_command(self.dt)
                 max_turn_rate = max(float(aircraft.dynamics.max_turn_rate), 1e-6)
                 executed_action_vector[idx] = float(
                     np.clip(loiter_turn_rate / max_turn_rate, -1.0, 1.0)

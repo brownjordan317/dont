@@ -18,6 +18,7 @@ class FixedWingAircraft:
         turning_radius: float,
         mission=None,
         turn_response_time_s: float = 0.0,
+        loiter_entry_transition_time_s: Optional[float] = None,
     ):
         self.id_tag = id_tag
         self.position = Position(initial_position.latitude, initial_position.longitude)
@@ -47,6 +48,17 @@ class FixedWingAircraft:
         self.distance_traveled = 0.0
         self.actual_turn_rate = 0.0
         self.desired_turn_rate = 0.0
+        if loiter_entry_transition_time_s is None:
+            loiter_entry_transition_time_s = max(
+                0.75,
+                self.dynamics.turn_response_time_s,
+            )
+        self.loiter_entry_transition_time_s = max(
+            float(loiter_entry_transition_time_s),
+            0.0,
+        )
+        self._loiter_transition_start_turn_rate = 0.0
+        self._loiter_transition_elapsed_s = 0.0
 
         if mission:
             self.add_waypoints(mission)
@@ -164,8 +176,42 @@ class FixedWingAircraft:
 
         return dx, dy
 
-    def loiter_turn_rate_command(self) -> float:
+    def _loiter_target_turn_rate(self) -> float:
         return float(self.loiter_turn_direction * self.dynamics.max_turn_rate)
+
+    def _resolve_loiter_entry_turn_rate(self) -> float:
+        for turn_rate in (self.actual_turn_rate, self.desired_turn_rate):
+            if abs(float(turn_rate)) > 1e-5:
+                return float(
+                    np.clip(
+                        turn_rate,
+                        -self.dynamics.max_turn_rate,
+                        self.dynamics.max_turn_rate,
+                    )
+                )
+        return 0.0
+
+    def loiter_turn_rate_command(self, dt: float = 0.0) -> float:
+        target_turn_rate = self._loiter_target_turn_rate()
+        if self.loiter_entry_transition_time_s <= 1e-6:
+            return target_turn_rate
+
+        progress = np.clip(
+            (
+                self._loiter_transition_elapsed_s
+                + max(float(dt), 0.0)
+            ) / self.loiter_entry_transition_time_s,
+            0.0,
+            1.0,
+        )
+        eased_progress = progress * progress * (3.0 - (2.0 * progress))
+        return float(
+            self._loiter_transition_start_turn_rate
+            + (
+                eased_progress
+                * (target_turn_rate - self._loiter_transition_start_turn_rate)
+            )
+        )
 
     def _resolve_loiter_turn_direction(self) -> float:
         for turn_rate in (self.actual_turn_rate, self.desired_turn_rate):
@@ -178,12 +224,16 @@ class FixedWingAircraft:
         dt: float,
         transformer: CoordinateTransformer,
     ):
-        commanded_turn_rate = self.loiter_turn_rate_command()
+        commanded_turn_rate = self.loiter_turn_rate_command(dt=dt)
         self.desired_turn_rate = commanded_turn_rate
         self.update_simple(
             commanded_turn_rate,
             dt,
             transformer,
+        )
+        self._loiter_transition_elapsed_s = min(
+            self._loiter_transition_elapsed_s + max(float(dt), 0.0),
+            self.loiter_entry_transition_time_s,
         )
         self.path_history.append(
             Position(
@@ -197,6 +247,10 @@ class FixedWingAircraft:
             turn_direction = self._resolve_loiter_turn_direction()
         self.flight_mode = FlightMode.LOITERING
         self.loiter_turn_direction = 1.0 if float(turn_direction) >= 0.0 else -1.0
+        self._loiter_transition_start_turn_rate = (
+            self._resolve_loiter_entry_turn_rate()
+        )
+        self._loiter_transition_elapsed_s = 0.0
         self.desired_turn_rate = self.loiter_turn_rate_command()
         self.loiter_center = Position(
             self.position.latitude,
