@@ -1,5 +1,5 @@
 import numpy as np
-from typing import Iterable, List, Optional
+from typing import Any, Iterable, List, Optional
 
 from flight_engine.helpers import wrap_angle, Position, FlightMode
 from flight_engine.trans_coorders import CoordinateTransformer
@@ -32,9 +32,12 @@ class FixedWingAircraft:
             cruise_speed,
             turn_response_time_s=turn_response_time_s,
         )
-        self.waypoint_manager = WaypointManager()
+        self.waypoint_manager = WaypointManager(
+            waypoint_id_prefix=f"{id_tag}-wp",
+        )
         self.flight_mode = FlightMode.IDLE
         self.loiter_center: Optional[Position] = None
+        self.loiter_turn_direction = 1.0
         self.path_history: List[Position] = [
             Position(
                 initial_position.latitude,
@@ -55,15 +58,53 @@ class FixedWingAircraft:
             if self.waypoint_manager.current_waypoint is None:
                 self.waypoint_manager.advance()
 
-    def add_waypoints(self, waypoints: List[Optional[Position]]):
+    def add_waypoints(self, waypoints: Iterable[Optional[Position]]):
         for wp in waypoints:
-            if not isinstance(wp, Position):
-                wp = Position(*wp)
-            self.add_wp(wp)
+            if wp is None:
+                continue
+            self.add_wp(self._coerce_waypoint(wp))
 
     def append_waypoints(self, waypoints: Iterable[Position]):
         for waypoint in waypoints:
             self.add_wp(waypoint)
+
+    def _coerce_waypoint(self, waypoint: Any) -> Position:
+        if isinstance(waypoint, Position):
+            return Position(
+                float(waypoint.latitude),
+                float(waypoint.longitude),
+                waypoint_id=waypoint.waypoint_id,
+            )
+
+        waypoint_id = None
+        latitude = None
+        longitude = None
+        if isinstance(waypoint, dict):
+            waypoint_id = waypoint.get("id", waypoint.get("waypoint_id"))
+            if "latitude" in waypoint and "longitude" in waypoint:
+                latitude = waypoint["latitude"]
+                longitude = waypoint["longitude"]
+            elif "lat" in waypoint and "lon" in waypoint:
+                latitude = waypoint["lat"]
+                longitude = waypoint["lon"]
+        elif isinstance(waypoint, (list, tuple)) and len(waypoint) == 2:
+            latitude, longitude = waypoint
+
+        if latitude is None or longitude is None:
+            raise TypeError(
+                "Waypoints must be Position instances, (lat, lon) pairs, or "
+                "dicts with latitude/longitude or lat/lon keys."
+            )
+
+        return Position(
+            float(latitude),
+            float(longitude),
+            waypoint_id=(
+                str(waypoint_id).strip()
+                if waypoint_id is not None and str(waypoint_id).strip()
+                else None
+            ),
+        )
 
     def replace_waypoint_queue(
         self,
@@ -123,28 +164,40 @@ class FixedWingAircraft:
 
         return dx, dy
 
+    def loiter_turn_rate_command(self) -> float:
+        return float(self.loiter_turn_direction * self.dynamics.max_turn_rate)
+
+    def _resolve_loiter_turn_direction(self) -> float:
+        for turn_rate in (self.actual_turn_rate, self.desired_turn_rate):
+            if abs(float(turn_rate)) > 1e-5:
+                return 1.0 if float(turn_rate) > 0.0 else -1.0
+        return 1.0
+
     def _update_loiter(
         self,
-        x: float,
-        y: float,
         dt: float,
         transformer: CoordinateTransformer,
     ):
-        turn_amount = self.dynamics.max_turn_rate * dt
-        new_heading = wrap_angle(self.heading + turn_amount)
-        x, y = self.dynamics.compute_arc_motion(
-            x, y, self.heading, turn_amount
+        commanded_turn_rate = self.loiter_turn_rate_command()
+        self.desired_turn_rate = commanded_turn_rate
+        self.update_simple(
+            commanded_turn_rate,
+            dt,
+            transformer,
+        )
+        self.path_history.append(
+            Position(
+                self.position.latitude,
+                self.position.longitude,
+            )
         )
 
-        self.heading = new_heading
-        lat, lon = transformer.local_to_geo(x, y)
-        new_pos = Position(lat, lon)
-
-        self.position = new_pos
-        self.path_history.append(Position(lat, lon))
-
-    def _enter_loiter(self):
+    def _enter_loiter(self, turn_direction: Optional[float] = None):
+        if turn_direction is None:
+            turn_direction = self._resolve_loiter_turn_direction()
         self.flight_mode = FlightMode.LOITERING
+        self.loiter_turn_direction = 1.0 if float(turn_direction) >= 0.0 else -1.0
+        self.desired_turn_rate = self.loiter_turn_rate_command()
         self.loiter_center = Position(
             self.position.latitude,
             self.position.longitude

@@ -39,6 +39,10 @@ from pettingzoo_env import MultiUAVParallelEnv
 console = Console()
 
 
+def show_planned_dubins_paths(config: dict) -> bool:
+    return bool(config.get("test", {}).get("show_planned_dubins_paths", True))
+
+
 def summarize_waypoint_counts(metrics: dict) -> tuple[int, int]:
     mission_stats = metrics.get("mission_stats", [])
     team_reached = sum(int(stat.get("waypoints_reached", 0)) for stat in mission_stats)
@@ -158,6 +162,7 @@ def run_and_record_episode(
     max_steps: int,
     *,
     deterministic: bool = True,
+    include_planned_paths: bool = True,
 ):
     tracked_agents = [agent for agent in env.possible_agents if agent in env.aircraft_by_agent]
     uav_data = [
@@ -173,12 +178,13 @@ def run_and_record_episode(
         for agent in tracked_agents
     ]
 
-    for idx, agent in enumerate(tracked_agents):
-        uav_data[idx]["planned_path"] = build_planned_dubins_path(
-            env,
-            agent,
-            transformer,
-        )
+    if include_planned_paths:
+        for idx, agent in enumerate(tracked_agents):
+            uav_data[idx]["planned_path"] = build_planned_dubins_path(
+                env,
+                agent,
+                transformer,
+            )
 
     done = False
     step_count = 0
@@ -249,6 +255,7 @@ def create_video(
     *,
     fps: int = 30,
     speed_multiplier: int = 1,
+    show_planned_paths: bool = True,
 ):
     console.print("[cyan]Creating video...[/cyan]")
     env_cfg = get_tuning_section(config, "test")["env"]
@@ -282,17 +289,18 @@ def create_video(
 
     for idx, data in enumerate(uav_data):
         color = colors[idx]
-        planned_path = np.asarray(data.get("planned_path", []), dtype=np.float32)
-        if len(planned_path) >= 2:
-            ax.plot(
-                planned_path[:, 0],
-                planned_path[:, 1],
-                color=color,
-                linewidth=2.2,
-                alpha=0.45,
-                linestyle=":",
-                zorder=4,
-            )
+        if show_planned_paths:
+            planned_path = np.asarray(data.get("planned_path", []), dtype=np.float32)
+            if len(planned_path) >= 2:
+                ax.plot(
+                    planned_path[:, 0],
+                    planned_path[:, 1],
+                    color=color,
+                    linewidth=2.2,
+                    alpha=0.45,
+                    linestyle=":",
+                    zorder=4,
+                )
         line, = ax.plot([], [], color=color, alpha=0.10, linewidth=1, animated=True)
         marker, = ax.plot(
             [],
@@ -469,6 +477,7 @@ def create_dubins_sample_visualization(config):
     test_cfg = config["test"]
     tuning = get_tuning_section(config, "test")
     env_cfg = tuning["env"]
+    show_planned_paths = show_planned_dubins_paths(config)
     save_dir = test_cfg["save_dir"]
     os.makedirs(save_dir, exist_ok=True)
     env, top_left, bottom_right, reset_options = create_test_environment(config)
@@ -515,21 +524,21 @@ def create_dubins_sample_visualization(config):
             ],
             dtype=np.float32,
         )
-        planned_path = np.asarray(
-            build_planned_dubins_path(env, agent, transformer),
-            dtype=np.float32,
-        )
-
-        if len(planned_path) >= 2:
-            ax.plot(
-                planned_path[:, 0],
-                planned_path[:, 1],
-                color=color,
-                linewidth=2.4,
-                alpha=0.95,
-                label=f"{agent} (R={aircraft.base_turning_radius:.0f}m)",
-                zorder=5,
+        if show_planned_paths:
+            planned_path = np.asarray(
+                build_planned_dubins_path(env, agent, transformer),
+                dtype=np.float32,
             )
+            if len(planned_path) >= 2:
+                ax.plot(
+                    planned_path[:, 0],
+                    planned_path[:, 1],
+                    color=color,
+                    linewidth=2.4,
+                    alpha=0.95,
+                    label=f"{agent} (R={aircraft.base_turning_radius:.0f}m)",
+                    zorder=5,
+                )
         ax.scatter(
             [start_x],
             [start_y],
@@ -595,13 +604,18 @@ def create_dubins_sample_visualization(config):
     ax.set_xlim(top_left_x - 100, bottom_right_x + 100)
     ax.set_ylim(bottom_right_y - 100, top_left_y + 100)
     ax.set_aspect("equal")
+    subtitle = (
+        "Planned Dubins paths from test config"
+        if show_planned_paths
+        else "Planned Dubins overlay disabled in test config"
+    )
     ax.set_title(
         f"{test_cfg['test_name']} Dubins Sample\n"
-        f"Planned Dubins paths from test config ({resolve_test_mission_mode(config)})"
+        f"{subtitle} ({resolve_test_mission_mode(config)})"
     )
     ax.set_xlabel("Local X (m)")
     ax.set_ylabel("Local Y (m)")
-    if tracked_agents:
+    if tracked_agents and show_planned_paths:
         ax.legend(loc="upper right")
 
     save_path = os.path.join(
@@ -657,6 +671,7 @@ def print_episode_report(total_reward, arrivals, total_waypoints, steps, truncat
 
 def test(config):
     test_cfg = config["test"]
+    show_planned_paths = show_planned_dubins_paths(config)
 
     light_mode = not bool(test_cfg.get("save_visuals", False))
     if light_mode:
@@ -703,6 +718,7 @@ def test(config):
             env.transformer,
             max_steps,
             deterministic=deterministic,
+            include_planned_paths=show_planned_paths,
         )
         print_episode_report(
             total_reward,
@@ -727,6 +743,7 @@ def test(config):
                 config,
                 fps=int(test_cfg.get("video_fps", 30)),
                 speed_multiplier=int(test_cfg.get("video_speed", 1)),
+                show_planned_paths=show_planned_paths,
             )
 
     env.close()

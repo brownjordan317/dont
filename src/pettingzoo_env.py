@@ -713,12 +713,12 @@ class MultiUAVParallelEnv(ParallelEnv):
             )
             aircraft.desired_turn_rate = commanded_turn_rate
             if aircraft.flight_mode == FlightMode.LOITERING:
-                aircraft.desired_turn_rate = float(aircraft.dynamics.max_turn_rate)
-                aircraft.actual_turn_rate = float(aircraft.dynamics.max_turn_rate)
-                executed_action_vector[idx] = 1.0
+                loiter_turn_rate = aircraft.loiter_turn_rate_command()
+                max_turn_rate = max(float(aircraft.dynamics.max_turn_rate), 1e-6)
+                executed_action_vector[idx] = float(
+                    np.clip(loiter_turn_rate / max_turn_rate, -1.0, 1.0)
+                )
                 aircraft._update_loiter(
-                    float(self._prev_local_cache[idx, 0]),
-                    float(self._prev_local_cache[idx, 1]),
                     self.dt,
                     self.transformer,
                 )
@@ -1134,10 +1134,24 @@ class MultiUAVParallelEnv(ParallelEnv):
         longitude = float(aircraft.position.longitude)
         local_x, local_y = self.transformer.geo_to_local(latitude, longitude)
         current_waypoint = aircraft.waypoint_manager.current_waypoint
+        current_waypoint_payload = (
+            self._runtime_waypoint_payload(current_waypoint)
+            if current_waypoint is not None
+            else None
+        )
         queued_waypoints = [
-            waypoint.to_tuple()
+            self._runtime_waypoint_payload(waypoint)
             for waypoint in aircraft.waypoint_manager.waypoint_queue
         ]
+        hit_waypoints = [
+            self._runtime_waypoint_payload(waypoint)
+            for waypoint in aircraft.waypoint_manager.hit_waypoints
+        ]
+        targets_by_id = self._runtime_target_payloads_by_id(
+            current_waypoint=current_waypoint,
+            queued_waypoints=aircraft.waypoint_manager.waypoint_queue,
+            hit_waypoints=aircraft.waypoint_manager.hit_waypoints,
+        )
         heading_rad = float(aircraft.heading)
         bearing_deg = float(np.degrees(heading_rad) % 360.0)
         return {
@@ -1157,17 +1171,41 @@ class MultiUAVParallelEnv(ParallelEnv):
             "heading_rad": heading_rad,
             "heading_deg": float(np.degrees(heading_rad)),
             "bearing_deg": bearing_deg,
-            "current_waypoint": (
+            "current_waypoint": current_waypoint_payload,
+            "current_waypoint_latlon": (
                 current_waypoint.to_tuple()
                 if current_waypoint is not None
                 else None
             ),
+            "current_target": current_waypoint_payload,
+            "current_target_id": (
+                current_waypoint.waypoint_id
+                if current_waypoint is not None
+                else None
+            ),
             "queued_waypoints": queued_waypoints,
+            "queued_waypoint_latlons": [
+                waypoint.to_tuple()
+                for waypoint in aircraft.waypoint_manager.waypoint_queue
+            ],
+            "hit_waypoints": hit_waypoints,
             "completed_waypoints": int(len(aircraft.waypoint_manager.hit_waypoints)),
             "remaining_waypoints": int(
                 len(queued_waypoints)
                 + (1 if current_waypoint is not None else 0)
             ),
+            "targets": {
+                "current": current_waypoint_payload,
+                "queued": list(queued_waypoints),
+                "hit": list(hit_waypoints),
+                "remaining": (
+                    [current_waypoint_payload, *queued_waypoints]
+                    if current_waypoint_payload is not None
+                    else list(queued_waypoints)
+                ),
+            },
+            "waypoints_by_id": targets_by_id,
+            "targets_by_id": dict(targets_by_id),
             "distance_traveled_m": float(aircraft.distance_traveled),
             "actual_turn_rate_rad_s": float(aircraft.actual_turn_rate),
             "desired_turn_rate_rad_s": float(aircraft.desired_turn_rate),
@@ -1184,6 +1222,21 @@ class MultiUAVParallelEnv(ParallelEnv):
 
     def runtime_waypoint_snapshot(self, agent: str) -> dict:
         return self.runtime_agent_snapshot(agent)
+
+    def runtime_target_snapshot(self, agent: str, target_id: str) -> dict:
+        targets_by_id = self.runtime_target_snapshots(agent)
+        if target_id not in targets_by_id:
+            raise KeyError(
+                f"Target {target_id!r} is not available for agent {agent!r}."
+            )
+        return dict(targets_by_id[target_id])
+
+    def runtime_target_snapshots(self, agent: str) -> dict[str, dict]:
+        snapshot = self.runtime_agent_snapshot(agent)
+        return {
+            target_id: dict(target_state)
+            for target_id, target_state in snapshot["targets_by_id"].items()
+        }
 
     def append_runtime_waypoints(
         self,
@@ -1258,20 +1311,34 @@ class MultiUAVParallelEnv(ParallelEnv):
             return Position(
                 float(waypoint.latitude),
                 float(waypoint.longitude),
+                waypoint_id=waypoint.waypoint_id,
             )
         if isinstance(waypoint, dict):
+            waypoint_id = waypoint.get("id", waypoint.get("waypoint_id"))
             if "latitude" in waypoint and "longitude" in waypoint:
                 return Position(
                     float(waypoint["latitude"]),
                     float(waypoint["longitude"]),
+                    waypoint_id=(
+                        str(waypoint_id).strip()
+                        if waypoint_id is not None and str(waypoint_id).strip()
+                        else None
+                    ),
                 )
             if "lat" in waypoint and "lon" in waypoint:
                 return Position(
                     float(waypoint["lat"]),
                     float(waypoint["lon"]),
+                    waypoint_id=(
+                        str(waypoint_id).strip()
+                        if waypoint_id is not None and str(waypoint_id).strip()
+                        else None
+                    ),
                 )
             raise TypeError(
-                "Waypoint dicts must provide latitude/longitude or lat/lon keys."
+                "Waypoint dicts must provide latitude/longitude or lat/lon "
+                "keys. Use id or waypoint_id to preserve a caller-supplied "
+                "waypoint id."
             )
         if self._is_scalar_waypoint_pair(waypoint):
             latitude, longitude = waypoint
@@ -1287,6 +1354,33 @@ class MultiUAVParallelEnv(ParallelEnv):
         if len(waypoint) != 2:
             return False
         return bool(np.isscalar(waypoint[0]) and np.isscalar(waypoint[1]))
+
+    def _runtime_waypoint_payload(self, waypoint: Position) -> dict:
+        if waypoint.waypoint_id is None:
+            raise ValueError("Runtime waypoint payloads require waypoint ids.")
+        return waypoint.to_waypoint_payload()
+
+    def _runtime_target_payloads_by_id(
+        self,
+        *,
+        current_waypoint: Optional[Position],
+        queued_waypoints: Iterable[Position],
+        hit_waypoints: Iterable[Position],
+    ) -> dict[str, dict]:
+        targets_by_id: dict[str, dict] = {}
+
+        def register(status: str, waypoint: Position):
+            payload = self._runtime_waypoint_payload(waypoint)
+            payload["status"] = status
+            targets_by_id[payload["id"]] = payload
+
+        if current_waypoint is not None:
+            register("current", current_waypoint)
+        for waypoint in queued_waypoints:
+            register("queued", waypoint)
+        for waypoint in hit_waypoints:
+            register("hit", waypoint)
+        return targets_by_id
 
     def _reset_runtime_waypoint_tracking(
         self,

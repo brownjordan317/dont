@@ -6,6 +6,7 @@ test:
   save_dir: "reports"
   save_visuals: true
   create_video: true
+  show_planned_dubins_paths: false
   deterministic: true
   video_fps: 30
   video_speed: 3

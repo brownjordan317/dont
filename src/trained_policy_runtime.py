@@ -146,6 +146,12 @@ class TrainedPolicyRuntime:
     def waypoint_states(self) -> dict[str, dict]:
         return self.agent_states()
 
+    def target_state(self, agent: str, target_id: str) -> dict:
+        return self.env.runtime_target_snapshot(agent, target_id)
+
+    def target_states(self, agent: str) -> dict[str, dict]:
+        return self.env.runtime_target_snapshots(agent)
+
     def get_episode_metrics(self) -> dict:
         return self.env.get_episode_metrics()
 

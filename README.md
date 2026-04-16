@@ -83,6 +83,7 @@ make eval
 - MAPPO checkpoint path
 - Manual mission definitions or generated mission settings
 - Video export controls
+- Visual overlay toggles such as `show_planned_dubins_paths`
 
 `config/eval_config.yaml`
 
@@ -180,6 +181,7 @@ Useful switches:
 
 - `save_visuals: false` for a fast stats-only run
 - `save_visuals: true` to export plots and, if enabled, an MP4 under `reports/`
+- `show_planned_dubins_paths: false` to hide the pregenerated/planned Dubins overlay in visual outputs
 - `model_path: "models_mappo/mappo_uav_policy_latest.pt"` to keep testing the rolling latest checkpoint
 
 Test mode keeps the mission definition fixed for the episode. Live waypoint mutation is not enabled there.
@@ -207,17 +209,23 @@ runtime = TrainedPolicyRuntime.from_config()
 
 runtime.append_waypoints(
     "UAV-1",
-    [(37.7751, -122.4179), (37.7758, -122.4168)],
+    [
+        {"id": "dispatch-101", "lat": 37.7751, "lon": -122.4179},
+        {"id": "dispatch-102", "lat": 37.7758, "lon": -122.4168},
+    ],
 )
 
 runtime.replace_waypoint_queue(
     "UAV-2",
-    [(37.7747, -122.4149), (37.7752, -122.4138)],
+    [
+        {"id": "dispatch-201", "lat": 37.7747, "lon": -122.4149},
+        {"id": "dispatch-202", "lat": 37.7752, "lon": -122.4138},
+    ],
 )
 
 runtime.replace_waypoint_queue(
     "UAV-3",
-    [(37.7739, -122.4185)],
+    [{"id": "dispatch-301", "lat": 37.7739, "lon": -122.4185}],
     replace_current=True,
 )
 
@@ -233,8 +241,14 @@ Live state access:
 uav_1 = runtime.agent_state("UAV-1")
 print(uav_1["position"]["lat"], uav_1["position"]["lon"])
 print(uav_1["bearing_deg"], uav_1["mode"])
+print(uav_1["current_target"])
+print(uav_1["targets_by_id"][uav_1["current_target_id"]])
+
+target = runtime.target_state("UAV-1", uav_1["current_target_id"])
+print(target["id"], target["status"])
 
 all_uavs = runtime.agent_states()
+all_targets_for_uav_1 = runtime.target_states("UAV-1")
 
 result = runtime.step()
 live_states_after_step = result.agent_states
@@ -247,6 +261,7 @@ Queue semantics:
 - `replace_waypoint_queue(agent, [...])` replaces only the queued backlog. The current active waypoint stays in place.
 - `replace_waypoint_queue(agent, [...], replace_current=True)` replaces the full remaining mission immediately, including the current active waypoint.
 - Passing an empty list with `replace_current=True` clears the remaining mission and the UAV returns to loiter.
+- Runtime waypoint payloads are dicts shaped like `{"id": "...", "lat": ..., "lon": ...}`. If you pass bare `(lat, lon)` pairs, the runtime auto-generates a unique waypoint ID for that UAV. Duplicate waypoint IDs for the same UAV are rejected.
 
 When a live update is applied, the runtime refreshes waypoint caches, reference guidance, observation history, and timeout accounting so the trained policy sees the new mission state on the next control step.
 
@@ -254,11 +269,18 @@ State semantics:
 
 - `runtime.agent_state(agent)` returns the latest snapshot for one UAV.
 - `runtime.agent_states()` returns the latest snapshot for every UAV in the runtime session.
+- `runtime.target_state(agent, target_id)` returns one target/waypoint dict by its unique ID for that UAV.
+- `runtime.target_states(agent)` returns all of that UAV's targets keyed by waypoint ID.
 - `result.agent_states` mirrors those snapshots immediately after each `runtime.step()`.
 - `position.lat` and `position.lon` are the live geodetic coordinates.
 - `bearing_deg` is the live compass bearing in `[0, 360)`.
 - `heading_rad` and `heading_deg` expose the same orientation in the simulator's signed heading convention.
 - `mode` and `flight_mode` expose the current flight mode such as `NAVIGATING` or `LOITERING`.
+- `current_waypoint`, `current_target`, `queued_waypoints`, and `hit_waypoints` are waypoint dicts with unique IDs.
+- `current_target_id` gives the active target ID directly.
+- `targets.current`, `targets.queued`, `targets.hit`, and `targets.remaining` group the same waypoint dicts by status.
+- `targets_by_id` and `waypoints_by_id` expose the UAV's target state keyed by waypoint ID, with each value including `id`, `lat`, `lon`, and `status`.
+- `completed_waypoints` remains the count of hit waypoints, while `hit_waypoints` keeps the full hit-waypoint history for that UAV.
 - Snapshots remain available after a step that terminates or truncates the episode, so you can still inspect final aircraft state before calling `reset()`.
 
 ## Evaluation

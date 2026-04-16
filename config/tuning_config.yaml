@@ -27,7 +27,7 @@ tuning:
     test:
       wp_hit_radius: 30
       origin: [37.7749, -122.4194]
-      box_size: 1500
+      box_size: 2000
 
     eval:
       box_min_m: 800
