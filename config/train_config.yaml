@@ -1,7 +1,7 @@
 train:
   model_name: "mappo_uav_policy"
   latest_model_name: "mappo_uav_policy_latest.pt"
-  save_dir: "./models_mappo"
+  save_dir: "./models_mappo_tuned"
   device: "cpu"
   torch_num_threads: 4
   seed: 7
