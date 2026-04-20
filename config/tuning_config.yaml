@@ -11,8 +11,8 @@ tuning:
       timeout_reference_route_distance_m: 2800
       obs_stack_size: 8
       waypoint_arrival_radius: 30
-      caution_dist: 75
-      critical_dist: 20
+      caution_dist: 50
+      critical_dist: 10
       min_agents: 2
       max_agents: 5
       boundary_margin: 0.05
@@ -55,8 +55,8 @@ tuning:
     completion_bonus: 1800.0
     waypoint_proximity_bonus: 80.0
     progress_reward: 32.0
-    geofence_penalty: 36.0
-    boundary_soft_penalty: 1.8
+    geofence_penalty: 28.0
+    boundary_soft_penalty: 1.2
     boundary_soft_growth_exponent: 1.15
     geofence_growth_exponent: 1.35
     geofence_depth_cap: 1.0
@@ -70,7 +70,7 @@ tuning:
     circling_progress_reset_m: 1.0
     circling_relief_steps: 10
     circling_relief_turn_fraction: 0.3
-    separation_margin_penalty: 3.8
+    separation_margin_penalty: 3.0
     separation_margin_ratio: 1.6
     stagnation_penalty: 0.45
     stagnation_step_threshold: 12
@@ -90,7 +90,7 @@ tuning:
     waypoint_reapproach_min_steps: 14
     waypoint_reapproach_release_distance_scale: 2.4
     waypoint_reapproach_release_arrival_scale: 3.5
-    boundary_buffer_ratio: 0.12
+    boundary_buffer_ratio: 0.1
     caution_lookahead_time_s: 8.0
     predicted_caution_weight: 0.5
     deconfliction_progress_scale: 0.7
