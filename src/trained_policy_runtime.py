@@ -4,8 +4,12 @@ from dataclasses import dataclass
 from typing import Optional
 
 from config_utils import load_mode_config
-from inference_setup import create_test_environment, load_policy_for_config
-from mappo_runtime import (
+from inference_setup import (
+    create_test_environment,
+    load_policy_for_config,
+    maybe_wrap_test_env,
+)
+from mappo.runtime import (
     action_dict_from_step,
     sample_info,
     select_actions,
@@ -44,6 +48,12 @@ class TrainedPolicyRuntime:
             config,
             terminate_on_all_waypoints_complete=False,
             allow_live_waypoint_updates=True,
+        )
+        self.env = maybe_wrap_test_env(
+            self.env,
+            config=config,
+            policy=self.policy,
+            config_section="test",
         )
         validate_policy_env(self.policy, self.env)
         self.deterministic = bool(config["test"].get("deterministic", True))
@@ -139,12 +149,6 @@ class TrainedPolicyRuntime:
         if self.env.aircraft_by_agent:
             self.last_agent_states = self.env.runtime_agent_snapshots()
         return dict(self.last_agent_states)
-
-    def waypoint_state(self, agent: str) -> dict:
-        return self.agent_state(agent)
-
-    def waypoint_states(self) -> dict[str, dict]:
-        return self.agent_states()
 
     def target_state(self, agent: str, target_id: str) -> dict:
         return self.env.runtime_target_snapshot(agent, target_id)

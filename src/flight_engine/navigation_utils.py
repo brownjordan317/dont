@@ -193,32 +193,6 @@ def point_at_distance_on_polyline(
     return np.asarray(polyline[-1], dtype=np.float32)
 
 
-def route_tracking_state(
-    route: Optional[np.ndarray],
-    position_local: np.ndarray,
-    turn_radius: float,
-) -> Tuple[float, float, float, float]:
-    if route is None or len(route) == 0:
-        return 0.0, 0.0, 0.0, 0.0
-
-    nearest_point, nearest_along, tangent, total_length = nearest_point_on_polyline(
-        route,
-        np.asarray(position_local, dtype=np.float32),
-    )
-    offset = np.asarray(position_local - nearest_point, dtype=np.float32)
-    signed_cross_track = float((tangent[0] * offset[1]) - (tangent[1] * offset[0]))
-    turn_radius = max(float(turn_radius), 1.0)
-    cross_track_norm = float(np.clip(signed_cross_track / turn_radius, -3.0, 3.0))
-    path_error_ratio = float(
-        np.clip(np.linalg.norm(offset) / turn_radius, 0.0, 3.0)
-    )
-    progress_ratio = float(np.clip(nearest_along / total_length, 0.0, 1.5))
-    remaining_ratio = float(
-        np.clip((total_length - nearest_along) / total_length, 0.0, 1.5)
-    )
-    return cross_track_norm, progress_ratio, remaining_ratio, path_error_ratio
-
-
 def order_route_points(
     *,
     start_local: np.ndarray,

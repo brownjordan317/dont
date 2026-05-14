@@ -1,5 +1,5 @@
-from typing import Tuple
 import numpy as np
+
 
 class FlightDynamics:
     def __init__(
@@ -32,27 +32,3 @@ class FlightDynamics:
         return float(
             np.clip(resolved_turn_rate, -self.max_turn_rate, self.max_turn_rate)
         )
-
-    def compute_arc_motion(
-        self,
-        x: float,
-        y: float,
-        heading: float,
-        turn_amount: float,
-    ) -> Tuple[float, float]:
-        turn_radius = self.turning_radius
-
-        if turn_amount > 0:
-            center_x = x - turn_radius * np.sin(heading)
-            center_y = y + turn_radius * np.cos(heading)
-        else:
-            center_x = x + turn_radius * np.sin(heading)
-            center_y = y - turn_radius * np.cos(heading)
-
-        current_angle = np.arctan2(y - center_y, x - center_x)
-        new_angle = current_angle + turn_amount
-
-        new_x = center_x + turn_radius * np.cos(new_angle)
-        new_y = center_y + turn_radius * np.sin(new_angle)
-
-        return new_x, new_y

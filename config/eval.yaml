@@ -1,0 +1,40 @@
+eval:
+  model_path: "models_manager/uav_hrl_manager_latest.pt"
+  manager:
+    route_skill_path: "models_route_skill/uav_route_skill_best.pt"
+    avoid_skill_path: "models_avoid_skill/uav_avoid_skill_best.pt"
+    skill_deterministic: true
+    avoid_option_sticky_enabled: true
+    avoid_option_min_steps: 8
+    avoid_option_handoff_pressure_threshold: 0.20
+    avoid_option_handoff_boundary_pressure_threshold: 0.20
+    avoid_option_handoff_min_separation_ratio: 1.0
+    avoid_option_loop_breakout_enabled: true
+    avoid_option_loop_breakout_min_steps: 24
+    avoid_option_loop_breakout_turns: 0.35
+    avoid_option_loop_breakout_max_displacement_efficiency: 0.75
+    avoid_option_loop_breakout_hazard_threshold: 1.10
+    avoid_option_loop_breakout_boundary_threshold: 1.25
+    avoid_option_loop_breakout_min_separation_ratio: 0.35
+    avoid_option_loop_breakout_route_steps: 120
+  device: "cpu"
+  num_missions: 100
+  deterministic: true
+  run_manager_eval: true
+  skill_eval:
+    enabled: false
+    skills: ["route", "avoid"]
+    num_missions: 20
+    deterministic: true
+    save_visuals: true
+    visual_episodes: 1
+    visual_dir: "reports/skill_eval"
+    video_fps: 30
+    video_speed_multiplier: 4
+
+output:
+  results_path: "results/eval_results.json"
+
+drone_settings:
+  num_drones: 2
+  num_wps_per_drone: 10

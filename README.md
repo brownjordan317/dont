@@ -1,54 +1,166 @@
-# DON&T — Deconflicted Optimal Navigation & Trajectory-learning
+# DON&T HRL- Deconflicted Optimal Navigation & Trajectory Hierachical Reinforcement Learning
 
-This repository trains and evaluates a shared MAPPO policy for fixed-wing UAV swarm deconfliction, waypoint following, and boundary-aware navigation.
+DON&T HRL trains fixed-wing UAV policies for waypoint navigation, collision avoidance, and geofence-aware multi-agent flight. The current system is hierarchical: low-level policies learn specialized continuous turn-rate behavior, while a high-level manager selects which low-level behavior should control each aircraft during a mission.
 
-The current setup is intentionally stationary. Training does not use curriculum; it samples randomized multi-UAV missions from the ranges in `config/tuning_config.yaml`.
+The environment models coordinated fixed-wing aircraft in randomized rectangular flight boxes. Aircraft must complete waypoint missions, maintain separation, avoid geofence breaches, and handle conflict cases where several vehicles are simultaneously competing for safe maneuvering space. Training is intentionally stationary; scenario variation comes from the sampling ranges in `config/tuning.yaml` rather than a curriculum schedule.
 
-## What It Does
+## Project Status
 
-- Trains one shared MAPPO actor with a centralized critic
-- Samples randomized 2-5 UAV missions with 6-20 waypoints per UAV during training
-- Uses reference-guided warm-start supervision before PPO updates take over
-- Applies runtime waypoint re-approach assist when a UAV blows a tight pass and starts orbiting
-- Scales episode timeout by both mission size and planned route distance
-- Tests a trained checkpoint on manual or generated missions
-- Supports live waypoint appends and queue replacement through a trained-policy runtime wrapper
-- Benchmarks a trained checkpoint across randomized evaluation missions
-- Produces optional MP4 rollouts for visual inspection
+This project is still a work in progress. The current results show useful pieces of behavior, especially in route following and short-horizon avoidance, but the full hierarchical system is not yet at the level I want. The individual skills are still inconsistent, the avoid skill has a high geofence failure rate, and the manager is limited by the quality of the skills it composes. I am not satisfied with the current performance and plan to keep improving the skill training, boundary behavior, anti-circling recovery, and manager handoff logic.
 
-## Install
+## Changes Since v2
 
-Python 3.10+ is recommended.
+DON&T HRL now uses a hierarchical policy layout instead of one shared MAPPO policy for every behavior. The route and avoid skills are trained as separate continuous-control policies, and the manager learns when to select each pretrained skill during mission execution.
+
+Route training now emphasizes curved waypoint tracking through Dubins-style reference guidance and warm-start imitation before PPO. Avoid training is waypoint-free and focused on local survival, collision avoidance, geofence compliance, and avoiding degenerate circling behavior. Manager training composes those two skills through categorical skill selection rather than direct turn-rate control.
+
+The environment and configs have also been simplified around the active training modes. Old inactive curriculum/recoverability paths were removed, per-skill evaluation is supported, and safety failures such as geofence breaches are terminal by default.
+
+## Architecture
+
+The project is organized around three trainable roles:
+
+- `route_skill`: continuous waypoint-following policy
+- `avoid_skill`: continuous local safety policy
+- `manager`: categorical policy that selects between the pretrained route and avoid skills
+
+All roles use the same underlying PettingZoo-style parallel environment and MAPPO implementation. The route and avoid skills are trained independently first, then loaded by the manager so it can learn skill selection instead of directly learning low-level turn-rate control.
+
+## Skill Roles
+
+The `route_skill` is a continuous-control waypoint follower. For each aircraft, it receives the standard flight observation, current waypoint geometry, Dubins-style reference-route features, nearby traffic features, and geofence context. It outputs one normalized turn command that is converted into a fixed-wing turn rate by the base environment. The route skill is trained on waypoint missions and optimized for waypoint completion, route progress, bounded turning, and geofence compliance. It is warm-started from a reference Dubins controller before PPO so the actor begins with a usable curved-path tracking prior.
+
+The `avoid_skill` is a continuous-control safety policy. It uses the same action interface as the route skill, but its training environment removes the waypoint objective and focuses on close-quarters survival. Aircraft fly in waypoint-free conflict scenarios where collision, geofence breach, and degenerate survival motion can terminate the episode. The reward emphasizes remaining alive, avoiding critical separation failures, staying inside the geofence, and avoiding synchronized circling patterns that satisfy survival without producing useful evasive behavior. When used by the manager, waypoint-related inputs are neutralized so the avoid policy behaves as a local safety maneuver rather than a second route follower.
+
+The `manager` is a categorical high-level policy over the pretrained low-level skills. It does not output turn rates; it selects `route_skill` or `avoid_skill` for each aircraft at each manager decision step. Its observation is the base flight observation augmented with manager-specific features, including the route skill action, avoid skill action, neighbor avoidance pressure, boundary pressure, current avoidance pressure, avoid-option state, avoid handoff safety, and avoid hold progress. Sticky avoid logic enforces minimum avoid durations and safe handoff conditions, while hard-coded breakout guards can temporarily force route-follow execution when avoid remains active in a low-threat circling loop. Forced override steps are masked out of PPO training.
+
+## Behavioral Demo Vids and Descriptions
+In the exampls folder I have some videos demoing different behaviors. 
+- `examples/skill_eval/avoid/avoid_mission_001.mp4`: This video shows a breif demo of the avoid skill. This skill has been the biggest struggle for me. I have been relatively unsuccesful in training the system to properly handle deconfliction. I can get it to survive and show signs of "dodging". However, results are consistently inconsistent. The system surives much longer than random movements would, but the odds of a long term survival are very low. On the bright side, it works well enough to make safe movements in large more realistic environments. Either way, i wouldnt trust it to fly something in the real world.
+- `examples/skill_eval/avoid/route_mission_001.mp4`: This video demos the route skill. If I am being completely honest with myself, this skill would probably be better as a hardcoded ability. Within the video, the dotted predrawn lines is a hard calculated optimal path for comparison. As can be seen, just manually taking control of the drone is practically gauranteed to be better. However, I would still call the training of this skill a relative success. The primary thing I wanted for the route skill was to learn dubins like paths rather than just point to point flight. 
+- `examples/No_circle_fix_no_decon.mp4`: This video demonstrates a reason why I believe the route skill is better of without RL. The drones begin the test with good flight patterns. However, the drones often get stuck in tight circling patterns around the waypoints. While this is something that is technically fixable with RL, it is far easier to hardcode breakouts from that behavior. Furthermore, just hardcoding would be able to completely prevent the circling in the first place.
+- `examples/no_decon.mp4`: This video demonstrates the rl route skill being aided by a hard coded loiter breakout. The hard coded loiter breakout allows the missions to actually continue to completion rather than timing out.
+
+## Environment Behavior
+
+Episodes are bounded by mission completion, safety failures, and timeout. Collision-critical separation failures and geofence breaches are terminal by default. The environment also tracks behavior diagnostics such as waypoint throughput, geofence outside steps, minimum pairwise separation, deconfliction time, flown distance, circling breakouts, and waypoint reapproach events.
+
+Waypoint following uses fixed-wing dynamics, bounded turn rates, configurable turn response lag, and Dubins-style reference guidance. Anti-circling assistance is intentionally implemented as hard-coded guard behavior: if an aircraft stalls around a waypoint or the manager keeps an aircraft in avoid during a low-threat loop, the environment can force a route-follow/reapproach interval and exclude that forced action from actor training.
+
+## Skill Evaluation Results
+
+The latest skill-only evaluation used 100 randomized route-skill missions and 100 randomized avoid-skill survival episodes. Visual export was disabled for this run. Results are reported as mean +/- standard deviation across episodes.
+
+### Route Skill
+
+| Metric | Result |
+| --- | ---: |
+| Reward | 1778.11 +/- 2484.62 |
+| Episode steps | 737.96 +/- 456.75 |
+| Episode duration | 221.39 +/- 137.02 s |
+| Reward per step | 1.84 +/- 6.72 |
+| Distance per UAV | 5901.28 +/- 4883.46 m |
+| Waypoint completion rate | 92.00% +/- 18.92% |
+| Waypoint throughput | 3.03 +/- 1.13/min |
+| Mission completion rate | 79.00% +/- 40.73% |
+| Failure rate | 21.00% +/- 40.73% |
+| Crash rate | 0.00% +/- 0.00% |
+| Timeout rate | 2.00% +/- 14.00% |
+| Boundary compliance | 81.00% +/- 39.23% |
+| Geofence exits | 0.19 +/- 0.39 |
+| Geofence outside steps | 0.19 +/- 0.39 |
+| Distance / planned distance | 1.19 +/- 0.99 |
+
+The route skill completed 79 of 100 missions, with 19 geofence violations and 2 max-step timeouts. Its waypoint completion rate is higher than its full mission completion rate, which means most failed episodes still made substantial route progress before termination. The distance-to-planned ratio of 1.19 suggests that the policy usually follows a reasonably efficient curved route, but the large standard deviation in reward, steps, distance, and distance ratio shows that behavior is still inconsistent across sampled missions. The main weakness is boundary handling: 19% of episodes left the geofence despite no collision failures.
+
+### Avoid Skill
+
+| Metric | Result |
+| --- | ---: |
+| Reward | -442.44 +/- 798.27 |
+| Episode steps | 325.56 +/- 169.64 |
+| Episode duration | 8.14 +/- 4.24 s |
+| Reward per step | -2.71 +/- 4.96 |
+| Distance per UAV | 227.72 +/- 117.76 m |
+| Survival completion rate | 17.00% +/- 37.56% |
+| Failure rate | 100.00% +/- 0.00% |
+| Crash rate | 11.00% +/- 31.29% |
+| Timeout rate | 0.00% +/- 0.00% |
+| Boundary compliance | 28.00% +/- 44.90% |
+| Geofence exits | 0.72 +/- 0.45 |
+| Geofence outside steps | 0.72 +/- 0.45 |
+| Minimum pairwise separation | 22.46 +/- 8.70 m |
+
+The avoid skill produced 17 survival completions, 72 geofence violations, and 11 critical separation violations. These results indicate that the policy often avoids immediate collisions better than random motion would, but it does not reliably keep the aircraft inside the operating box. The minimum pairwise separation average of 22.46 m is above the critical threshold in many episodes, so the dominant failure mode is boundary escape rather than direct collision. The high geofence violation rate also explains the negative mean reward: the skill has learned some reactive avoidance behavior, but it is not yet a robust standalone deconfliction policy.
+
+### Manager
+
+The manager is currently weak because it is composing two low-level skills that are not yet reliable enough on their own. In principle, the manager should choose `route_skill` when an aircraft can safely make mission progress and choose `avoid_skill` when local traffic or boundary pressure makes route following unsafe. That only works cleanly if each skill has a dependable meaning. Right now, `route_skill` usually makes waypoint progress but still fails a meaningful number of episodes through geofence violations, while `avoid_skill` shows short-horizon evasive behavior but frequently survives by drifting out of bounds or entering low-progress behavior.
+
+This makes the manager's training signal messy. If the manager selects route, the aircraft may advance toward the mission but inherit route's boundary and circling problems. If it selects avoid, the aircraft may reduce immediate collision pressure but create a new boundary failure or stay in avoid longer than useful. The result is that the manager is not simply learning "when to switch"; it is also being forced to compensate for two imperfect controllers with different failure modes.
+
+The current manager performance should therefore be interpreted as a system-level limitation, not just a manager-policy failure. Better route geofence compliance, more reliable avoid behavior near boundaries, and stronger anti-circling recovery would make the manager's action space much cleaner. Until then, the hard-coded sticky-avoid and breakout guards are necessary because the learned hierarchy does not consistently recover from those cases by itself.
+
+## Configuration
+
+The main configuration files are:
+
+- `config/tuning.yaml`: shared environment, flight, reward, and guidance settings
+- `config/train_route_skill.yaml`: route-skill PPO and warm-start settings
+- `config/train_avoid_skill.yaml`: avoid-skill survival training settings
+- `config/train_manager.yaml`: manager PPO settings and low-level skill checkpoint paths
+- `config/train.yaml`: default manager-training entrypoint
+- `config/test.yaml`: test rollout, mission, checkpoint, and video settings
+- `config/eval.yaml`: randomized evaluation settings
+
+Training and evaluation modes are dispatched through `src/deconfliction_factory.py`.
+
+## Repository Layout
+
+```text
+src/
+├── deconfliction_factory.py      # CLI mode dispatcher
+├── config_utils.py               # YAML loading and mode-specific config merge helpers
+├── inference_setup.py            # Shared test/eval/runtime environment setup
+├── trained_policy_runtime.py     # Runtime wrapper for live waypoint updates
+├── env/                          # Base environment, HRL wrappers, rewards, scenarios
+├── flight_engine/                # Fixed-wing dynamics, waypoints, geometry, Dubins paths
+├── mappo/                        # MAPPO policy, runtime helpers, rollout utilities
+├── train/                        # Training loop and PPO update utilities
+├── test/                         # Test rollout and visualization code
+└── eval/                         # Evaluation runners and result aggregation
+
+config/
+├── tuning.yaml
+├── train.yaml
+├── train_route_skill.yaml
+├── train_avoid_skill.yaml
+├── train_manager.yaml
+├── test.yaml
+└── eval.yaml
+```
+
+## Commands
+
+Install dependencies:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-## Project Structure
+Common entrypoints:
 
-```text
-src/
-├── deconfliction_factory.py   # Mode dispatcher
-├── train.py                   # MAPPO training loop
-├── test.py                    # MAPPO inference + optional video export
-├── eval.py                    # MAPPO random-mission benchmark
-├── inference_setup.py         # Shared test/runtime environment setup helpers
-├── mappo.py                   # Policy, critic, normalization, GAE helpers
-├── mappo_runtime.py           # Shared rollout/inference helpers
-├── trained_policy_runtime.py  # Deployment-style trained-policy runtime wrapper
-├── pettingzoo_env.py          # Parallel multi-UAV environment
-└── flight_engine/             # Aircraft dynamics and geometry helpers
-
-config/
-├── train_config.yaml
-├── test_config.yaml
-├── eval_config.yaml
-└── tuning_config.yaml
+```bash
+make train_route_skill
+make train_avoid_skill
+make train_manager
+make train
+make test
+make eval
+make eval_skills
 ```
 
-## Quick Start
-
-All modes run through `deconfliction_factory.py`:
+Equivalent direct form:
 
 ```bash
 python src/deconfliction_factory.py --mode train
@@ -56,247 +168,10 @@ python src/deconfliction_factory.py --mode test
 python src/deconfliction_factory.py --mode eval
 ```
 
-Or with `make`:
+## Outputs
 
-```bash
-make train
-make test
-make eval
-```
+Training checkpoints are written to the save directory configured by the active training file. TensorBoard logs are written under the configured tensorboard log directory, usually inside the corresponding model directory. Test videos and rollout plots are written under `reports/` when visual output is enabled. Evaluation summaries are written under `results/`.
 
-## Configuration
+## Acknowledgment
 
-`config/train_config.yaml`
-
-- PPO optimizer, rollout, warm-start, checkpoint, and TensorBoard settings
-- `latest_model_name` controls the stable checkpoint path used by test and eval
-
-`config/tuning_config.yaml`
-
-- Shared environment limits such as agent count, safety thresholds, and map ranges
-- Training mission sampling ranges
-- Reward shaping for progress, completion, safety, boundary pressure, circling, and stagnation
-- Guidance settings for deconfliction and waypoint re-approach behavior
-
-`config/test_config.yaml`
-
-- MAPPO checkpoint path
-- Manual mission definitions or generated mission settings
-- Video export controls
-- Visual overlay toggles such as `show_planned_dubins_paths`
-
-`config/eval_config.yaml`
-
-- MAPPO checkpoint path
-- Number of randomized benchmark missions
-- Evaluation mission size controls
-
-## Training
-
-Training currently uses:
-
-- `32` parallel environments
-- `10,000,000` total timesteps
-- reference warm-start before PPO updates
-- randomized rectangular flight boxes from `500 m` to `1800 m`
-- randomized training missions with `2-5` UAVs and `6-20` waypoints per UAV
-
-Episode timeout is not fixed per mission anymore. The environment starts from `tuning.env.shared.max_steps` and can scale upward using:
-
-- assigned waypoint count
-- longest planned route distance
-- `timeout_max_steps` as a hard cap
-
-This helps large missions avoid timing out simply because they sampled more work.
-
-### Checkpoints
-
-Training saves checkpoints into `train.save_dir`:
-
-```text
-models_mappo/
-├── mappo_uav_policy_latest.pt
-├── mappo_uav_policy_step_100000.pt
-├── ...
-└── mappo_uav_policy.pt
-```
-
-`mappo_uav_policy_latest.pt` is refreshed during training using `train.latest_checkpoint_interval`.
-
-Important: periodic checkpoints are now written after the PPO optimizer step, so `*_latest.pt` reflects the newest trained weights rather than a pre-update snapshot from the same timestep.
-
-`Ctrl+C` writes an `_interrupted.pt` checkpoint before exiting.
-
-### TensorBoard
-
-TensorBoard logs are written under `train.tensorboard.log_dir`. By default, each training launch gets its own timestamped subdirectory, and `latest_run.txt` points to the newest run.
-
-Launch TensorBoard with:
-
-```bash
-tensorboard --logdir models_mappo/tensorboard
-```
-
-Useful training curves include:
-
-- `train/mean_return_50`
-- `train/completion_rate_50`
-- `train/crash_rate_50`
-- `train/timeout_rate_50`
-- `train/waypoint_throughput_per_min_50`
-- `train/geofence_outside_steps_50`
-- `train/circling_steps_50`
-- `policy/reference_mae`
-
-Useful episode-level diagnostics include:
-
-- `episode/circling_steps`
-- `episode/circling_breakouts`
-- `episode/waypoint_reapproach_steps`
-- `episode/waypoint_reapproach_events`
-- `episode/deconfliction_time_s`
-- `episode/geofence_outside_steps`
-
-## Waypoint Re-approach
-
-The environment includes a runtime waypoint re-approach assist for fixed-wing geometry failures.
-
-If a UAV gets too close to a waypoint, cannot capture it cleanly within its turn limits, and starts stalling or circling, the environment:
-
-- resets the local reference route from the aircraft's current state
-- temporarily overrides the executed turn command with the reference breakout/rejoin command
-- keeps that assist active for a short minimum window
-- releases control once the aircraft has opened the geometry and can make a sane inbound pass again
-
-Those assisted steps are masked out of the PPO actor loss so the policy is not trained as if it chose the override itself.
-
-## Testing
-
-Test mode runs the checkpoint in `config/test_config.yaml` against either:
-
-- `mission_mode: "missions"` for hand-authored scenarios
-- `mission_mode: "gen_mission"` for generated missions
-
-Useful switches:
-
-- `save_visuals: false` for a fast stats-only run
-- `save_visuals: true` to export plots and, if enabled, an MP4 under `reports/`
-- `show_planned_dubins_paths: false` to hide the pregenerated/planned Dubins overlay in visual outputs
-- `model_path: "models_mappo/mappo_uav_policy_latest.pt"` to keep testing the rolling latest checkpoint
-
-Test mode keeps the mission definition fixed for the episode. Live waypoint mutation is not enabled there.
-
-## Trained Runtime
-
-Live waypoint edits are available only through `src/trained_policy_runtime.py`, which is intended for deployment or external integration around an already-trained checkpoint.
-
-It is not enabled in:
-
-- training
-- normal `test` mode
-- `eval` mode
-
-The runtime wrapper builds the same test-style environment, but with live waypoint updates enabled and episode termination on waypoint completion disabled. That means a UAV can finish its current queue, loiter, and later receive more waypoints without resetting the episode.
-
-When you launch your own integration from the repo root, run it with `PYTHONPATH=src` so the runtime modules resolve.
-
-Example:
-
-```python
-from trained_policy_runtime import TrainedPolicyRuntime
-
-runtime = TrainedPolicyRuntime.from_config()
-
-runtime.append_waypoints(
-    "UAV-1",
-    [
-        {"id": "dispatch-101", "lat": 37.7751, "lon": -122.4179},
-        {"id": "dispatch-102", "lat": 37.7758, "lon": -122.4168},
-    ],
-)
-
-runtime.replace_waypoint_queue(
-    "UAV-2",
-    [
-        {"id": "dispatch-201", "lat": 37.7747, "lon": -122.4149},
-        {"id": "dispatch-202", "lat": 37.7752, "lon": -122.4138},
-    ],
-)
-
-runtime.replace_waypoint_queue(
-    "UAV-3",
-    [{"id": "dispatch-301", "lat": 37.7739, "lon": -122.4185}],
-    replace_current=True,
-)
-
-while True:
-    result = runtime.step()
-    if result.terminated or result.truncated:
-        break
-```
-
-Live state access:
-
-```python
-uav_1 = runtime.agent_state("UAV-1")
-print(uav_1["position"]["lat"], uav_1["position"]["lon"])
-print(uav_1["bearing_deg"], uav_1["mode"])
-print(uav_1["current_target"])
-print(uav_1["targets_by_id"][uav_1["current_target_id"]])
-
-target = runtime.target_state("UAV-1", uav_1["current_target_id"])
-print(target["id"], target["status"])
-
-all_uavs = runtime.agent_states()
-all_targets_for_uav_1 = runtime.target_states("UAV-1")
-
-result = runtime.step()
-live_states_after_step = result.agent_states
-```
-
-Queue semantics:
-
-- `append_waypoints(agent, [...])` keeps the current active waypoint and adds the new waypoints to the tail of the queue.
-- If that UAV has already completed its queue and is loitering, the first appended waypoint becomes the new current target and navigation resumes immediately.
-- `replace_waypoint_queue(agent, [...])` replaces only the queued backlog. The current active waypoint stays in place.
-- `replace_waypoint_queue(agent, [...], replace_current=True)` replaces the full remaining mission immediately, including the current active waypoint.
-- Passing an empty list with `replace_current=True` clears the remaining mission and the UAV returns to loiter.
-- Runtime waypoint payloads are dicts shaped like `{"id": "...", "lat": ..., "lon": ...}`. If you pass bare `(lat, lon)` pairs, the runtime auto-generates a unique waypoint ID for that UAV. Duplicate waypoint IDs for the same UAV are rejected.
-
-When a live update is applied, the runtime refreshes waypoint caches, reference guidance, observation history, and timeout accounting so the trained policy sees the new mission state on the next control step.
-
-State semantics:
-
-- `runtime.agent_state(agent)` returns the latest snapshot for one UAV.
-- `runtime.agent_states()` returns the latest snapshot for every UAV in the runtime session.
-- `runtime.target_state(agent, target_id)` returns one target/waypoint dict by its unique ID for that UAV.
-- `runtime.target_states(agent)` returns all of that UAV's targets keyed by waypoint ID.
-- `result.agent_states` mirrors those snapshots immediately after each `runtime.step()`.
-- `position.lat` and `position.lon` are the live geodetic coordinates.
-- `bearing_deg` is the live compass bearing in `[0, 360)`.
-- `heading_rad` and `heading_deg` expose the same orientation in the simulator's signed heading convention.
-- `mode` and `flight_mode` expose the current flight mode such as `NAVIGATING` or `LOITERING`.
-- `current_waypoint`, `current_target`, `queued_waypoints`, and `hit_waypoints` are waypoint dicts with unique IDs.
-- `current_target_id` gives the active target ID directly.
-- `targets.current`, `targets.queued`, `targets.hit`, and `targets.remaining` group the same waypoint dicts by status.
-- `targets_by_id` and `waypoints_by_id` expose the UAV's target state keyed by waypoint ID, with each value including `id`, `lat`, `lon`, and `status`.
-- `completed_waypoints` remains the count of hit waypoints, while `hit_waypoints` keeps the full hit-waypoint history for that UAV.
-- Snapshots remain available after a step that terminates or truncates the episode, so you can still inspect final aircraft state before calling `reset()`.
-
-## Evaluation
-
-Eval mode benchmarks one checkpoint over randomized missions and writes results to `results/eval_results.json`.
-
-The evaluation summary now includes more than reward alone. It records mission-success and behavior metrics such as:
-
-- waypoint completion rate
-- crash and timeout outcomes
-- waypoint throughput
-- geofence exits and outside steps
-- minimum pairwise separation
-- deconfliction time
-- circling steps and circling breakouts
-- waypoint re-approach steps and events
-- flown distance versus planned route distance
-
-This makes it easier to spot policies that achieve reward by circling, stalling, or drifting instead of completing missions cleanly.
+OpenAI Codex was used as a development assistant for this project, including help with implementation, debugging, refactoring, experiment analysis, and documentation.

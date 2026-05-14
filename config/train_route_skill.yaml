@@ -1,0 +1,67 @@
+train:
+  role: "route_skill"
+  model_name: "uav_route_skill"
+  latest_model_name: "uav_route_skill_latest.pt"
+  save_dir: "./models_route_skill"
+  device: "cpu"
+  torch_num_threads: 4
+  seed: 7
+
+  total_timesteps: 2_000_000
+  num_envs: 8
+  rollout_steps: 256
+  update_epochs: 2
+  minibatch_size: 128
+  checkpoint_interval: 100_000
+  latest_checkpoint_interval: 100_000
+  save_latest_checkpoint: true
+  log_interval_updates: 5
+
+  learning_rate: 3e-5
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_ratio: 0.05
+  value_clip: 0.2
+  entropy_coef: 0.0
+  value_loss_coef: 0.5
+  max_grad_norm: 0.1
+  target_kl: 0.005
+  route_skill_training_num_agents: 1
+  route_skill_mission_waypoint_count: 3
+  route_skill_box_size_m: 2000
+  route_skill_separation_dist: 50
+  route_skill_completion_bonus: 1800.0
+  route_skill_geofence_penalty: 28.0
+  route_skill_harsh_turn_penalty: 0.8
+  route_skill_harsh_turn_threshold: 0.35
+  route_skill_geofence_breach_terminates: true
+  route_skill_geofence_breach_grace_steps: 1
+  route_skill_geofence_breach_penalty: 3200.0
+  route_skill_require_reference_route_in_bounds: true
+  route_skill_reference_route_boundary_margin_m: 1.0
+  route_skill_reference_route_generation_attempts: 128
+  route_skill_time_pressure_penalty: 0.12
+  route_skill_remaining_waypoint_penalty: 0.16
+  # Route is a Dubins-like path-following skill, so pretrain the actor on the
+  # reference Dubins controller before PPO optimizes terminal mission reward.
+  route_skill_warmstart_max_steps: 100_000
+  route_skill_warmstart_num_envs: 8
+  route_skill_warmstart_learning_rate: 3e-4
+  route_skill_warmstart_batch_steps: 32
+  route_skill_warmstart_delta: 0.1
+  route_skill_warmstart_log_interval: 10_000
+
+  actor_hidden_sizes: [256, 256]
+  critic_hidden_sizes: [256, 256]
+  log_std_init: -2.5
+  obs_clip: 10.0
+  state_clip: 10.0
+
+  tensorboard:
+    enabled: true
+    log_dir: "./models_route_skill/tensorboard/uav_route_skill"
+    separate_runs: true
+    flush_secs: 30
+    episode_metrics_interval: 5
+    episode_detail_interval: 20
+    train_metrics_interval_updates: 5

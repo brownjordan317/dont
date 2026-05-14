@@ -1,0 +1,53 @@
+test:
+  device: "cpu"
+  model_path: "models_manager/uav_hrl_manager_best.pt"
+  manager:
+    route_skill_path: "models_route_skill/uav_route_skill_best.pt"
+    avoid_skill_path: "models_avoid_skill/uav_avoid_skill_best.pt"
+    skill_deterministic: true
+    avoid_option_sticky_enabled: true
+    avoid_option_min_steps: 8
+    avoid_option_handoff_pressure_threshold: 0.20
+    avoid_option_handoff_boundary_pressure_threshold: 0.20
+    avoid_option_handoff_min_separation_ratio: 1.0
+    avoid_option_loop_breakout_enabled: true
+    avoid_option_loop_breakout_min_steps: 24
+    avoid_option_loop_breakout_turns: 0.35
+    avoid_option_loop_breakout_max_displacement_efficiency: 0.75
+    avoid_option_loop_breakout_hazard_threshold: 1.10
+    avoid_option_loop_breakout_boundary_threshold: 1.25
+    avoid_option_loop_breakout_min_separation_ratio: 0.35
+    avoid_option_loop_breakout_route_steps: 120
+  test_name: "MAPPO"
+  mission_mode: "gen_mission"
+  save_dir: "reports"
+  save_visuals: true
+  create_video: true
+  show_planned_dubins_paths: false
+  deterministic: true
+  video_fps: 30
+  video_speed: 3
+
+  deconfliction: true
+  gen_mission:
+    num_drones: 5
+    num_waypoints: 20 # per drone
+
+  missions:
+    "UAV-1":
+      initial_position: [37.7749, -122.4194]
+      initial_heading: 45
+      cruise_speed: 25
+      turning_radius: 60
+      waypoints:
+        - - 37.773175
+          - -122.420527
+
+    "UAV-2":
+      initial_position: [37.7742, -122.4190]
+      initial_heading: 270
+      cruise_speed: 20
+      turning_radius: 55
+      waypoints:
+        - - 37.774814
+          - -122.414403

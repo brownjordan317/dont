@@ -101,6 +101,11 @@ def guidance_turn_action_from_vector(
 
     target_bearing = float(np.arctan2(target_vec[0], target_vec[1]))
     heading_error = wrap_angle(target_bearing - current_heading)
+    turn_sine = float(np.sin(heading_error))
+    if float(np.cos(heading_error)) < -0.25 and abs(turn_sine) < 0.1:
+        # A target almost exactly behind a fixed-wing aircraft is a singular
+        # pure-pursuit case: either turn direction is valid, but zero turn is not.
+        turn_sine = 1.0
     lookahead_distance = max(
         distance_to_target * turn_lookahead_scale,
         float(turning_radius) * turn_radius_floor_scale,
@@ -111,7 +116,7 @@ def guidance_turn_action_from_vector(
         turn_gain
         * 2.0
         * float(cruise_speed)
-        * np.sin(heading_error)
+        * turn_sine
         / max(lookahead_distance, 1e-6)
     )
     return float(

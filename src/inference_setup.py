@@ -5,10 +5,37 @@ from rich.console import Console
 
 from config_utils import get_tuning_section
 from flight_engine.navigation_utils import build_box_bounds, local_box_geometry
+from env.hrl_manager_env import HierarchicalManagerEnv
 from mappo import MAPPOPolicy
-from pettingzoo_env import MultiUAVParallelEnv
+from env.pettingzoo_env import MultiUAVParallelEnv
+from env.route_skill_runtime_env import RouteSkillOnlyEnv
 
 console = Console()
+
+
+def deconfliction_enabled_for_test(config) -> bool:
+    test_cfg = config["test"]
+    return bool(test_cfg.get("deconfliction", True))
+
+
+def route_skill_only_enabled_for_test(config) -> bool:
+    return not deconfliction_enabled_for_test(config)
+
+
+def resolve_test_policy_path(config) -> str:
+    test_cfg = config["test"]
+    if route_skill_only_enabled_for_test(config):
+        route_skill_path = (
+            test_cfg.get("route_skill_path")
+            or test_cfg.get("manager", {}).get("route_skill_path")
+        )
+        if not route_skill_path:
+            raise ValueError(
+                "Route-skill-only tests need a route skill checkpoint, but no "
+                "route skill path was provided. Set test.manager.route_skill_path."
+            )
+        return str(route_skill_path)
+    return str(test_cfg["model_path"])
 
 
 def resolve_device(requested_device: str) -> str:
@@ -221,6 +248,9 @@ def create_test_environment(
     generated_cfg = test_cfg.get("gen_mission", {})
     configured_manual_missions = test_cfg.get("missions", {})
     flight_cfg = tuning["flight"]
+    route_skill_only = route_skill_only_enabled_for_test(config)
+    effective_min_agents = int(env_cfg["min_agents"])
+    effective_max_agents = int(env_cfg["max_agents"])
 
     origin = tuple(float(value) for value in env_cfg["origin"])
     top_left, bottom_right = build_box_bounds(origin, float(env_cfg["box_size"]))
@@ -251,23 +281,25 @@ def create_test_environment(
         )
         if num_drones <= 0:
             raise ValueError("test.gen_mission.num_drones must be at least 1.")
+        if num_drones == 1:
+            effective_min_agents = 1
         manual_missions = expand_generated_manual_missions(
             configured_manual_missions=configured_manual_missions,
             num_drones=num_drones,
-            max_agents=int(env_cfg["max_agents"]),
+            max_agents=effective_max_agents,
             top_left=top_left,
             bottom_right=bottom_right,
             min_start_separation_m=float(
                 flight_cfg.get(
                     "min_start_separation_m",
-                    env_cfg["caution_dist"] * 1.5,
+                    env_cfg["separation_dist"] * 1.5,
                 )
             ),
-            caution_dist=float(env_cfg["caution_dist"]),
+            caution_dist=float(env_cfg["separation_dist"]),
             waypoint_arrival_radius=float(
                 env_cfg.get(
                     "waypoint_arrival_radius",
-                    env_cfg.get("wp_hit_radius", 30.0),
+                    30.0,
                 )
             ),
         )
@@ -279,12 +311,14 @@ def create_test_environment(
         )
         if mission_waypoint_count <= 0:
             raise ValueError("test.gen_mission.num_waypoints must be at least 1.")
-        if not (env_cfg["min_agents"] <= len(manual_missions) <= env_cfg["max_agents"]):
+        if not (effective_min_agents <= len(manual_missions) <= effective_max_agents):
             raise ValueError(
                 "The selected generated-mission aircraft count must be within the "
-                f"configured env min/max agent bounds [{env_cfg['min_agents']}, {env_cfg['max_agents']}]."
+                f"configured env min/max agent bounds [{effective_min_agents}, {effective_max_agents}]."
             )
         reset_options = {"generate_random_waypoints": True}
+
+    guidance_config = dict(tuning["guidance"])
 
     env = MultiUAVParallelEnv(
         dt=env_cfg["dt"],
@@ -314,21 +348,31 @@ def create_test_environment(
         mission_waypoint_count=mission_waypoint_count,
         waypoint_arrival_radius=env_cfg.get(
             "waypoint_arrival_radius",
-            env_cfg.get("wp_hit_radius", 30.0),
+            30.0,
         ),
         obs_stack_size=env_cfg["obs_stack_size"],
-        caution_dist=env_cfg["caution_dist"],
-        critical_dist=env_cfg["critical_dist"],
-        min_agents=env_cfg["min_agents"],
-        max_agents=env_cfg["max_agents"],
+        separation_dist=env_cfg["separation_dist"],
+        min_agents=effective_min_agents,
+        max_agents=effective_max_agents,
+        reset_generation_attempts=env_cfg.get("reset_generation_attempts", 128),
+        reset_min_feasible_cpa_m=env_cfg.get("reset_min_feasible_cpa_m"),
+        reset_min_boundary_time_ratio=env_cfg.get("reset_min_boundary_time_ratio", 0.35),
+        reset_heading_jitter_rad=env_cfg.get("reset_heading_jitter_rad", 0.2),
         origin=origin,
         top_left=top_left,
         bottom_right=bottom_right,
         flight_config=tuning["flight"],
         reward_config=tuning["rewards"],
-        guidance_config=tuning["guidance"],
+        guidance_config=guidance_config,
         manual_missions=manual_missions,
         terminate_on_all_waypoints_complete=terminate_on_all_waypoints_complete,
+        terminate_on_critical_violation=deconfliction_enabled_for_test(config),
+        terminate_on_geofence_violation=env_cfg.get(
+            "terminate_on_geofence_violation",
+            True,
+        ),
+        geofence_breach_grace_steps=env_cfg.get("geofence_breach_grace_steps", 1),
+        enable_inter_drone_awareness=deconfliction_enabled_for_test(config),
         allow_live_waypoint_updates=allow_live_waypoint_updates,
     )
     return env, top_left, bottom_right, reset_options
@@ -337,6 +381,95 @@ def create_test_environment(
 def load_policy_for_config(config) -> MAPPOPolicy:
     test_cfg = config["test"]
     return MAPPOPolicy.load(
-        test_cfg["model_path"],
+        resolve_test_policy_path(config),
         device=resolve_device(str(test_cfg.get("device", "cpu"))),
+    )
+
+
+def maybe_wrap_manager_env(
+    env,
+    *,
+    config: dict,
+    policy: MAPPOPolicy,
+    config_section: str,
+):
+    if getattr(policy, "actor_type", "gaussian") != "categorical_skill":
+        return env
+
+    section_cfg = config[config_section]
+    manager_cfg = section_cfg.get("manager", {})
+    route_skill_path = manager_cfg.get("route_skill_path")
+    avoid_skill_path = manager_cfg.get("avoid_skill_path")
+    if not route_skill_path or not avoid_skill_path:
+        raise ValueError(
+            f"{config_section}.model_path points to a manager checkpoint, but "
+            f"{config_section}.manager.route_skill_path and "
+            f"{config_section}.manager.avoid_skill_path were not provided."
+        )
+
+    device = resolve_device(str(section_cfg.get("device", "cpu")))
+    route_skill_policy = MAPPOPolicy.load(str(route_skill_path), device=device)
+    avoid_skill_policy = MAPPOPolicy.load(str(avoid_skill_path), device=device)
+    return HierarchicalManagerEnv(
+        base_env=env,
+        route_skill_policy=route_skill_policy,
+        avoid_skill_policy=avoid_skill_policy,
+        skill_deterministic=bool(manager_cfg.get("skill_deterministic", True)),
+        avoid_option_sticky_enabled=bool(
+            manager_cfg.get("avoid_option_sticky_enabled", True)
+        ),
+        avoid_option_min_steps=int(manager_cfg.get("avoid_option_min_steps", 8)),
+        avoid_option_handoff_pressure_threshold=float(
+            manager_cfg.get("avoid_option_handoff_pressure_threshold", 0.20)
+        ),
+        avoid_option_handoff_boundary_pressure_threshold=float(
+            manager_cfg.get("avoid_option_handoff_boundary_pressure_threshold", 0.20)
+        ),
+        avoid_option_handoff_min_separation_ratio=float(
+            manager_cfg.get("avoid_option_handoff_min_separation_ratio", 1.0)
+        ),
+        avoid_option_loop_breakout_enabled=bool(
+            manager_cfg.get("avoid_option_loop_breakout_enabled", True)
+        ),
+        avoid_option_loop_breakout_min_steps=int(
+            manager_cfg.get("avoid_option_loop_breakout_min_steps", 24)
+        ),
+        avoid_option_loop_breakout_turns=float(
+            manager_cfg.get("avoid_option_loop_breakout_turns", 0.35)
+        ),
+        avoid_option_loop_breakout_max_displacement_efficiency=float(
+            manager_cfg.get(
+                "avoid_option_loop_breakout_max_displacement_efficiency",
+                0.75,
+            )
+        ),
+        avoid_option_loop_breakout_hazard_threshold=float(
+            manager_cfg.get("avoid_option_loop_breakout_hazard_threshold", 1.10)
+        ),
+        avoid_option_loop_breakout_boundary_threshold=float(
+            manager_cfg.get("avoid_option_loop_breakout_boundary_threshold", 1.25)
+        ),
+        avoid_option_loop_breakout_min_separation_ratio=float(
+            manager_cfg.get("avoid_option_loop_breakout_min_separation_ratio", 0.35)
+        ),
+        avoid_option_loop_breakout_route_steps=int(
+            manager_cfg.get("avoid_option_loop_breakout_route_steps", 120)
+        ),
+    )
+
+
+def maybe_wrap_test_env(
+    env,
+    *,
+    config: dict,
+    policy: MAPPOPolicy,
+    config_section: str,
+):
+    if config_section == "test" and route_skill_only_enabled_for_test(config):
+        return RouteSkillOnlyEnv(base_env=env, route_skill_policy=policy)
+    return maybe_wrap_manager_env(
+        env,
+        config=config,
+        policy=policy,
+        config_section=config_section,
     )

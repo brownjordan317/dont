@@ -1,0 +1,98 @@
+train:
+  role: "manager"
+  model_name: "uav_hrl_manager"
+  latest_model_name: "uav_hrl_manager_latest.pt"
+  save_dir: "./models_manager"
+  device: "cpu"
+  torch_num_threads: 4
+  seed: 7
+
+  manager:
+    # Fine manager timestep for avoid/route handoff precision. At 45 m/s this
+    # is about 1.125 m per manager decision step.
+    env_dt_s: 0.025
+    # Preserve the same 900s base episode cap as 3000 steps at dt=0.3.
+    max_steps: 36000
+    timeout_max_steps: 54000
+    route_skill_path: "./models_route_skill/uav_route_skill_best.pt"
+    avoid_skill_path: "./models_avoid_skill/uav_avoid_skill_best.pt"
+    skill_deterministic: true
+    avoid_option_sticky_enabled: true
+    avoid_option_min_steps: 8
+    avoid_option_handoff_pressure_threshold: 0.20
+    avoid_option_handoff_boundary_pressure_threshold: 0.20
+    avoid_option_handoff_min_separation_ratio: 1.0
+    avoid_option_loop_breakout_enabled: true
+    avoid_option_loop_breakout_min_steps: 24
+    avoid_option_loop_breakout_turns: 0.35
+    avoid_option_loop_breakout_max_displacement_efficiency: 0.75
+    avoid_option_loop_breakout_hazard_threshold: 1.10
+    avoid_option_loop_breakout_boundary_threshold: 1.25
+    avoid_option_loop_breakout_min_separation_ratio: 0.35
+    avoid_option_loop_breakout_route_steps: 120
+    scenario_mode: "conflict_course"
+    conflict_num_agents: 5
+    conflict_box_size_m: 650
+    conflict_mission_waypoint_count: 8
+    conflict_start_radius_fraction: 0.74
+    conflict_crossing_radius_fraction: 0.14
+    conflict_boundary_radius_fraction: 0.88
+    conflict_boundary_route_offset_m: 170
+    conflict_boundary_focus_probability: 0.55
+    conflict_boundary_focus_center_fraction: 0.55
+    conflict_boundary_focus_target_time_ratio: 0.45
+    conflict_boundary_focus_max_time_ratio: 0.85
+    conflict_boundary_focus_scored_legs: 2
+    conflict_generation_attempts: 4096
+    conflict_require_valid_candidate: true
+    conflict_require_boundary_viability: true
+    conflict_min_boundary_time_ratio: 0.35
+    conflict_min_feasible_cpa_m: 4
+    conflict_target_cpa_m: 6
+    conflict_max_trigger_cpa_m: 18
+    conflict_min_pairs: 2
+    conflict_target_leg_time_s: 6.0
+    conflict_phase_jitter_rad: 0.18
+    conflict_first_wp_lateral_jitter_m: 45
+    conflict_follow_lateral_offset_m: 90
+
+  total_timesteps: 8_000_000
+  manager_warmstart_max_steps: 500_000
+  manager_warmstart_num_envs: 16
+  manager_warmstart_learning_rate: 3e-4
+  manager_warmstart_batch_steps: 32
+  manager_warmstart_delta: 0.1
+  manager_warmstart_log_interval: 10_000
+  num_envs: 16
+  rollout_steps: 512
+  update_epochs: 2
+  minibatch_size: 128
+  checkpoint_interval: 500_000
+  latest_checkpoint_interval: 250_000
+  save_latest_checkpoint: true
+  log_interval_updates: 5
+
+  learning_rate: 1e-4
+  gamma: 0.999
+  gae_lambda: 0.98
+  clip_ratio: 0.10
+  value_clip: 0.2
+  entropy_coef: 0.006
+  value_loss_coef: 0.25
+  max_grad_norm: 0.25
+  target_kl: 0.02
+
+  actor_hidden_sizes: [256, 256]
+  critic_hidden_sizes: [256, 256]
+  log_std_init: -0.8
+  obs_clip: 10.0
+  state_clip: 10.0
+
+  tensorboard:
+    enabled: true
+    log_dir: "./models_manager/tensorboard/uav_hrl_manager"
+    separate_runs: true
+    flush_secs: 30
+    episode_metrics_interval: 5
+    episode_detail_interval: 20
+    train_metrics_interval_updates: 5

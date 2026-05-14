@@ -26,8 +26,8 @@ def _deep_merge(base, override):
 
 
 def load_mode_config(mode, config_dir="config"):
-    mode_path = os.path.join(config_dir, f"{mode}_config.yaml")
-    tuning_path = os.path.join(config_dir, "tuning_config.yaml")
+    mode_path = os.path.join(config_dir, f"{mode}.yaml")
+    tuning_path = os.path.join(config_dir, "tuning.yaml")
 
     mode_config = load_yaml(mode_path)
     tuning_config = load_yaml(tuning_path)

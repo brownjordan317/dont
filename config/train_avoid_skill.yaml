@@ -1,0 +1,100 @@
+train:
+  role: "avoid_skill"
+  model_name: "uav_avoid_skill"
+  latest_model_name: "uav_avoid_skill_latest.pt"
+  save_dir: "./models_avoid_skill"
+  device: "cpu"
+  torch_num_threads: 4
+  seed: 7
+
+  total_timesteps: 12_000_000
+  num_envs: 16
+  rollout_steps: 1024
+  update_epochs: 2
+  minibatch_size: 128
+  checkpoint_interval: 1_500_000
+  latest_checkpoint_interval: 500_000
+  save_latest_checkpoint: true
+  save_best_checkpoint: true
+  best_model_name: "uav_avoid_skill_best.pt"
+  # With the short local-conflict horizon, completion is a meaningful signal.
+  best_checkpoint_primary_metric: "completion_rate"
+  best_checkpoint_min_episodes: 50
+  best_checkpoint_patience_timesteps: 2_000_000
+  best_checkpoint_stop_min_timesteps: 4_000_000
+  log_interval_updates: 5
+
+  learning_rate: 5e-5
+  final_learning_rate: 1e-5
+  # Fine control timestep for avoid/manager precision. At 45 m/s this is
+  # about 1.125 m per policy step, instead of 13.5 m at the shared 0.3s dt.
+  avoid_skill_env_dt_s: 0.025
+  gamma: 0.999
+  gae_lambda: 0.98
+  clip_ratio: 0.10
+  value_clip: 0.2
+  entropy_coef: 0.0
+  value_loss_coef: 0.5
+  max_grad_norm: 0.25
+  target_kl: 0.015
+
+  # Survival avoid: no route/waypoint objective and no waypoint navigation.
+  # Train on short close-encounter windows, not wide-box coordination.
+  avoid_skill_survival_scenario_mode: "conflict_course"
+  avoid_skill_survival_agents_min: 5
+  avoid_skill_survival_agents: 5
+  avoid_skill_survival_box_size_min_m: 220
+  avoid_skill_survival_box_size_max_m: 300
+  avoid_skill_survival_conflict_edge_margin_m: 20
+  avoid_skill_survival_conflict_min_pairs: 5
+  avoid_skill_survival_conflict_target_cpa_m: 12
+  avoid_skill_survival_conflict_max_trigger_cpa_m: 35
+  avoid_skill_survival_conflict_min_feasible_cpa_m: 8
+  avoid_skill_survival_conflict_require_valid_candidate: false
+  # Survival starts only need enough edge clearance to avoid instant geofence
+  # death. A turn-radius-sized margin makes the usable interior too small and
+  # forces coordinated formations.
+  avoid_skill_survival_start_margin_m: 20
+  # A short window makes this a reactive five-aircraft avoid skill. Much longer
+  # no-waypoint survival starts to reward loose group coordination and boundary
+  # loitering instead of the close-quarters escape maneuver.
+  avoid_skill_survival_max_steps: 600
+  avoid_skill_survival_step_reward: 1.0
+  avoid_skill_survival_crash_penalty: 2400.0
+  # On terminal failure, every active drone gets this fraction so the episode
+  # is globally bad, while the remaining penalty stays on the culprit drones
+  # for credit assignment.
+  avoid_skill_survival_team_failure_penalty_fraction: 0.25
+  avoid_skill_survival_generation_attempts: 256
+  # Reject reset states that are already committed to a near-immediate crash.
+  avoid_skill_survival_min_boundary_time_ratio: 0.20
+  avoid_skill_survival_start_validation_steps: 12
+  avoid_skill_survival_boundary_escape_steps: 24
+  avoid_skill_survival_degenerate_motion_terminates: true
+  avoid_skill_survival_degenerate_min_steps: 480
+  avoid_skill_survival_degenerate_consecutive_steps: 160
+  avoid_skill_survival_degenerate_turn_fraction_threshold: 0.7
+  avoid_skill_survival_degenerate_turn_agreement_threshold: 0.90
+  # Warm-start the actor on the scripted waypoint-free avoidance guidance
+  # before PPO optimizes sparse survival reward.
+  avoid_skill_warmstart_max_steps: 150_000
+  avoid_skill_warmstart_num_envs: 16
+  avoid_skill_warmstart_learning_rate: 3e-4
+  avoid_skill_warmstart_batch_steps: 32
+  avoid_skill_warmstart_delta: 0.1
+  avoid_skill_warmstart_log_interval: 10_000
+
+  actor_hidden_sizes: [256, 256]
+  critic_hidden_sizes: [256, 256]
+  log_std_init: -1.2
+  obs_clip: 10.0
+  state_clip: 10.0
+
+  tensorboard:
+    enabled: true
+    log_dir: "./models_avoid_skill/tensorboard/uav_avoid_skill"
+    separate_runs: true
+    flush_secs: 30
+    episode_metrics_interval: 5
+    episode_detail_interval: 20
+    train_metrics_interval_updates: 5
